@@ -1,0 +1,36 @@
+{
+  "jahr": 2025,
+  "hebesatz_prozent": 400,
+  "gemeinde": "Musterstadt",
+  "quelle": "erfundene Zahlen — dieser Mandant existiert nicht",
+  "abschnitte": [
+    {
+      "id": "einkommen",
+      "titel": "Ermittlung des Einkommens",
+      "hinweis": "Anlage GK / Anlage ZVE",
+      "zeilen": [
+        { "text": "Steuerbilanzgewinn / -verlust",
+          "betrag": 369000, "art": "start", "quelle": "guv",
+          "hinweis": "identisch mit dem Jahresüberschuss der Handelsbilanz" },
+        { "text": "+ Körperschaftsteuer und Solidaritätszuschlag",
+          "betrag": 0, "konten": ["7600", "7608"],
+          "paragraf": "§ 10 Nr. 2 KStG",
+          "hinweis": "im Beispiel noch nicht zurückgestellt" },
+        { "text": "+ Gewerbesteuer",
+          "betrag": 0, "konten": ["7610"],
+          "paragraf": "§ 4 Abs. 5b EStG" },
+        { "text": "− steuerfreie Beteiligungserträge",
+          "betrag": -500000, "konten": ["4900"],
+          "paragraf": "§ 8b Abs. 1 KStG",
+          "hinweis": "Ausschüttung einer Tochtergesellschaft, Beteiligung über 10 %" },
+        { "text": "+ nichtabziehbare Betriebsausgaben, 5 % der Bezüge",
+          "betrag": 25000,
+          "paragraf": "§ 8b Abs. 5 KStG",
+          "hinweis": "5 % von 5.000,00 — pauschal, unabhängig vom tatsächlichen Aufwand" },
+        { "text": "= zu versteuerndes Einkommen", "betrag": -106000, "art": "summe" }
+      ]
+    }
+  ],
+  "positionen": [],
+  "vergleich": { "aus_jahren": [], "hinweis": "kein Vorjahr im Beispiel" }
+}

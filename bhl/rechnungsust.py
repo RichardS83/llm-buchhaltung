@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Die auf einer Eingangsrechnung *gedruckte* Umsatzsteuer lesen.
 
 Warum das nötig ist: eine Vorsteuer, die als 19 % vom Bruttobetrag zurückgerechnet

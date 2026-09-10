@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Kontenrahmen fuer die private Einkommensteuer (Zusammenveranlagung).
 
 Doppelte Buchfuehrung als *Erfassungstechnik*, Ueberschussrechnung als

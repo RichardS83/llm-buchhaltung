@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Auswertungszeitraeume.
 
 Eine Auswertung ohne Zeitraum ist wertlos: "2026" kann der Stand vom 15. Juli

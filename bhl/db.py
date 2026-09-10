@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """SQLite-Backend fuer die doppelte Buchfuehrung.
 
 Betraege werden durchgaengig als Integer in Cent gefuehrt - niemals als Float.
