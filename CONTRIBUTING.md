@@ -56,11 +56,12 @@ in einem Satz: Du behältst dein Urheberrecht, räumst dem Projektinhaber aber
 das Recht ein, deinen Beitrag auch unter anderen Lizenzbedingungen
 weiterzugeben.
 
-Warum das nötig ist: Das Projekt steht unter AGPL-3.0 und wird daneben
-kommerziell lizenziert. Beides gleichzeitig geht nur, wenn die Rechte an allen
-Teilen des Quelltexts in einer Hand liegen. Ohne CLA wäre schon der erste
-fremde Beitrag ein dauerhaftes Hindernis — auch für Änderungen, die dir selbst
-zugutekämen.
+Warum das nötig ist: Solange die Rechte an allen Teilen des Quelltexts in
+einer Hand liegen, kann das Projekt später anders lizenziert werden — strenger,
+freier oder im Einzelfall abweichend. Ohne CLA wäre schon der erste fremde
+Beitrag ein dauerhaftes Hindernis, auch für Änderungen, die dir selbst
+zugutekämen: Eine Lizenz lässt sich dann nur noch mit der Zustimmung jedes
+einzelnen Beitragenden ändern, und Leute verschwinden.
 
 Bestätige die CLA im Pull Request mit einer Zeile:
 

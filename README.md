@@ -236,7 +236,8 @@ Rückgabewert 1 — ein Skript oder ein Agent kann daran hängen.
 **AGPL-3.0.** Wer die Software ändert und über ein Netzwerk anbietet, muss den
 geänderten Quelltext den Nutzern zugänglich machen (§ 13 AGPL). Der volle Text
 steht in [`LICENSE`](LICENSE), die Randbedingungen in [`NOTICE`](NOTICE) – dort
-steht auch, wie eine kommerzielle Lizenz ohne diese Pflicht zu bekommen ist.
+steht auch, was gilt, wenn jemand die Software außerhalb der AGPL einsetzen
+möchte: dafür braucht es die ausdrückliche Zustimmung des Urhebers.
 
 Beiträge sind willkommen, siehe [`CONTRIBUTING.md`](CONTRIBUTING.md); sie
 werden unter der [CLA](CLA.md) angenommen.
