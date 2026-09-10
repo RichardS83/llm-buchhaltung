@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Auswertungen: Summen- und Saldenliste, Bilanz, GuV, Kontoblatt, Journal."""
 
 from __future__ import annotations

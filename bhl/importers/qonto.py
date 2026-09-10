@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Qonto-Importer: Bankumsätze und die daran hängenden Rechnungen.
 
 Nur Standardbibliothek. Der Importer schreibt ausschließlich **Rohdaten** — den

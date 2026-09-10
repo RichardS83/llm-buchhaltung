@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Parser fuer eine ausgefertigte Einkommensteuererklaerung (DATEV, PDF).
 
 Zweck: das Vorjahr als Vergleichsjahr in die Buchfuehrung holen, ohne eine

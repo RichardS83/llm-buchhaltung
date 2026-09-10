@@ -22,8 +22,23 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Beispielmandant durchrechnen
         run: |
-          ./bh --db /tmp/ci.sqlite init   beispiel 2025
-          ./bh --db /tmp/ci.sqlite eb     beispiel 2025 mandanten/beispiel/2025/eb.csv
-          ./bh --db /tmp/ci.sqlite buchen beispiel 2025 mandanten/beispiel/2025/buchungen.csv
-          ./bh --db /tmp/ci.sqlite report beispiel 2025 bilanz
+          ./bh --db /tmp/ci.sqlite init    beispiel 2025
+          ./bh --db /tmp/ci.sqlite eb      beispiel 2025 mandanten/beispiel/2025/eb.csv
+          ./bh --db /tmp/ci.sqlite buchen  beispiel 2025 mandanten/beispiel/2025/buchungen.csv
+          ./bh --db /tmp/ci.sqlite report  beispiel 2025 bilanz
+          ./bh --db /tmp/ci.sqlite report  beispiel 2025 guv
           ./bh --db /tmp/ci.sqlite pruefen beispiel 2025
+          ./bh --db /tmp/ci.sqlite abgabe  beispiel 2025
+
+      - name: Private Einkommensteuer durchrechnen
+        run: |
+          P=/tmp/ci-privat.sqlite
+          ./bh --db $P init    beispiel-privat 2025
+          ./bh --db $P eb      beispiel-privat 2025 mandanten/beispiel-privat/2025/eb.csv
+          ./bh --db $P buchen  beispiel-privat 2025 mandanten/beispiel-privat/2025/buchungen.csv
+          ./bh --db $P report  beispiel-privat 2025 anlagen
+          ./bh --db $P report  beispiel-privat 2025 bilanz
+          # Der Platzhalter muss sperren - Rueckgabewert 1 ist hier das Soll.
+          if ./bh --db $P abgabe beispiel-privat 2025; then
+            echo "FEHLER: Abgabesperre hat nicht gegriffen"; exit 1
+          fi

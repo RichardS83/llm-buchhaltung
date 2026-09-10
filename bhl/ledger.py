@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Buchen: Stammdaten, Journal, Salden."""
 
 from __future__ import annotations

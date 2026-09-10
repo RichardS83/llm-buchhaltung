@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Umsatzsteuer-Voranmeldung als Auswertung der Buchführung.
 
 Die Kennzahlen werden nicht neben der Buchhaltung gerechnet, sondern aus ihr
