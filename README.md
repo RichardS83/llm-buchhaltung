@@ -16,9 +16,16 @@ Mit „der Agent" ist eine Coding-CLI gemeint, die auf dem Rechner läuft und
 Dateien und Shell bedienen darf — **Claude Code**, **OpenAI Codex**, **Gemini
 CLI**, Cursor und was sonst diese Form hat. Die Anwendung ist ein
 Kommandozeilenwerkzeug mit Textausgabe und einer SQLite-Datei; das ist genau
-die Oberfläche, mit der solche Agenten gut umgehen. Ihre Betriebsanleitung
+die Schnittstelle, mit der solche Agenten gut umgehen. Ihre Betriebsanleitung
 steht in [`AGENTS.md`](AGENTS.md) (Claude Code findet sie über
 [`CLAUDE.md`](CLAUDE.md)).
+
+**Für den Menschen gibt es eine Weboberfläche im Browser** (`bh serve`, siehe
+[Oberfläche](#oberfläche)). Sie läuft lokal auf `127.0.0.1`, ohne Konto und
+ohne Netzabruf, und sie **liest nur** — gebucht wird über die CLI. Dort klappt
+jede Zahl bis zur Einzelbuchung und zum Beleg auf. Das ist die Ansicht, in der
+freigegeben wird; der Agent soll sie am Ende seiner Arbeit starten und den Link
+nennen.
 
 Der Mensch kommt einmal vor, am Ende, und das ist Absicht: Wer jeden
 Buchungssatz selbst prüft, hat nichts gewonnen. Verlässlich ist die
@@ -403,6 +410,19 @@ einer Datei dieses Verzeichnisses.
 `./bh serve <mandant> <jahr>` startet einen lokalen Server auf 127.0.0.1 (Port
 8765) und öffnet den Browser. Der Server **liest nur** – gebucht wird
 ausschließlich über die CLI.
+
+Der Befehl blockiert, solange der Server läuft. Wer ihn nur im Hintergrund
+haben will — ein Agent etwa, der danach weiterarbeitet — nimmt `--ensure`:
+
+```bash
+./bh serve <mandant> <jahr> --ensure     # gibt http://127.0.0.1:8765/ aus
+```
+
+Das ist idempotent. Läuft die Oberfläche schon, wird kein zweiter Server
+gestartet, sondern nur der Link ausgegeben; sonst wird einer im Hintergrund
+gestartet und gewartet, bis er antwortet. Kommt er nicht hoch, ist der
+Rückgabewert 1 und es gibt keinen Link — ein Link auf einen toten Server ist
+schlimmer als keiner.
 
 **Jede Zahl lässt sich aufklappen.** Das ist der tragende Grundsatz der
 Oberfläche und gilt für jede Seite, nicht nur für einzelne:
