@@ -16,20 +16,20 @@ Mit „der Agent" ist eine Coding-CLI gemeint, die auf dem Rechner läuft und
 Dateien und Shell bedienen darf — **Claude Code**, **OpenAI Codex**, **Gemini
 CLI**, Cursor und was sonst diese Form hat. Die Anwendung ist ein
 Kommandozeilenwerkzeug mit Textausgabe und einer SQLite-Datei; das ist genau
-die Oberfläche, mit der solche Agenten gut umgehen. Ihre Betriebsanleitung
-steht in [`AGENTS.md`](AGENTS.md) (Claude Code findet sie über
-[`CLAUDE.md`](CLAUDE.md)).
+die Form, mit der solche Agenten gut zurechtkommen. Wie sie zu bedienen ist,
+steht in [`AGENTS.md`](AGENTS.md) — Claude Code findet den Weg dorthin über
+[`CLAUDE.md`](CLAUDE.md).
 
 Der Mensch kommt einmal vor, am Ende, und das ist Absicht: Wer jeden
 Buchungssatz selbst prüft, hat nichts gewonnen. Verlässlich ist die
 Arbeitsteilung nicht, weil ein Mensch mitliest, sondern weil die Anwendung
 deterministisch widerspricht.
 
-Die Anwendung ist kein fertiges Produkt, sondern die Unterlage, auf der ein
-Agent arbeitet. Deutsches Steuerrecht ändert Zeilennummern, Fristen und Sätze
-jedes Jahr, und jeder Mandant hat einen Fall, den der Kontenrahmen nicht kennt.
-Der Agent darf beides lokal geraderücken — und soll melden, was er geradegerückt
-hat, damit es beim nächsten nicht wieder fehlt.
+Die Anwendung ist kein fertiges Produkt, sondern eine Arbeitsgrundlage.
+Deutsches Steuerrecht verschiebt jedes Jahr Zeilennummern, Fristen und Sätze,
+und jeder Mandant hat einen Fall, den der Kontenrahmen nicht kennt. Der Agent
+darf beides lokal in Ordnung bringen — und soll melden, was er geändert hat,
+damit es beim nächsten nicht wieder fehlt.
 
 Der Agent arbeitet, die Anwendung widerspricht, der Mensch entscheidet. Die
 Prüfzeile ist der Grund, warum die anderen zusammen funktionieren:
@@ -58,20 +58,78 @@ Zwei Betriebsarten, dieselbe Mechanik:
 Buchen, Belegarchiv, Bankimport, Auswertungsmaschine und Oberfläche sind
 identisch – der Unterschied steckt im Kontenrahmen und in einer Prüfung.
 
-## Geländer
+## Woher das kommt
+
+Das hier ist kein Produkt, sondern Werkzeug aus dem eigenen Gebrauch. Gebaut
+für drei Mandanten, die es tatsächlich gibt: eine operative GmbH mit
+Umsatzsteuer und Reverse Charge, eine Beteiligungs-UG ohne Umsatzsteuer, und
+eine private Zusammenveranlagung mit mehreren Mietobjekten — je Objekt eine
+Anlage V, dazu AfA, Erhaltungsaufwand nach § 82b EStDV, Schuldzinsen aus
+mehreren Darlehen und die Trennung von abziehbar und privat.
+
+Fast jede Eigenheit hat einen Anlass. Die Tabelle, die festhält, was
+tatsächlich ans Finanzamt übermittelt wurde, gibt es, weil fünf
+Voranmeldungen abgelehnt wurden und es drei Monate niemand merkte. Die
+Abgabesperre gibt es, weil eine geschätzte Zahl beinahe in einer Erklärung
+gelandet wäre. Und der Kontoauszug-Parser kennt drei Vordruckgenerationen,
+weil die Bank ihr Layout zweimal geändert hat und die Auszüge von 2017 anders
+aussehen als die von heute.
+
+**Geteilt, damit sich das lohnt.** Wer dieselben Formulare ausfüllt, stößt auf
+dieselben Lücken: ein Kontenrahmen, der einen Fall nicht kennt; eine
+Formularzeile, die sich verschoben hat; ein Auszugsformat, das der Parser
+nicht liest. Zu mehreren findet man das schneller als allein, und jede
+Korrektur nützt auch allen anderen. Deshalb steht in
+[`AGENTS.md`](AGENTS.md) ausdrücklich, dass ein Agent melden soll, was er
+lokal geändert hat.
+
+Was das Projekt **nicht** ist: eine Kanzleisoftware, ein DATEV-Ersatz oder
+etwas, das jeden Fall des deutschen Steuerrechts kennt. Es kennt die Fälle,
+die vorkamen.
+
+> ## ⚠️ Nutzung auf eigenes Risiko
+>
+> **Diese Software rechnet, sie berät nicht.** Sie ist keine Hilfeleistung in
+> Steuersachen im Sinne des § 5 StBerG und ersetzt weder Steuerberater noch
+> Wirtschaftsprüfer.
+>
+> **Für Richtigkeit und Vollständigkeit haftet allein, wer einreicht.** Wer
+> mit diesem Werkzeug Bücher führt, einen Abschluss aufstellt, eine
+> Voranmeldung oder eine Steuererklärung abgibt, trägt dafür die volle
+> Verantwortung — steuerlich, handelsrechtlich und strafrechtlich. Eine
+> unrichtige Erklärung bleibt deine unrichtige Erklärung, gleich welches
+> Programm sie gerechnet hat.
+>
+> **Keine Gewährleistung.** Die Software wird ohne jede Zusicherung
+> bereitgestellt, wie in §§ 15 bis 17 der AGPL-3.0 ausgeführt: kein Anspruch
+> auf Fehlerfreiheit, Eignung für einen bestimmten Zweck oder auf ein
+> steuerlich zutreffendes Ergebnis. Eine Haftung des Urhebers für Schäden —
+> Steuernachzahlungen, Zinsen, Säumnis- oder Verspätungszuschläge, Bußgelder,
+> Datenverlust — ist ausgeschlossen, soweit das Gesetz es zulässt.
+>
+> **Der Rechtsstand veraltet.** Zeilennummern der Formulare, Fristen,
+> Steuersätze, Hebesätze und Freibeträge bilden einen bestimmten Stand ab und
+> ändern sich jedes Jahr. Prüfe sie gegen die geltenden Vordrucke, bevor du
+> etwas abgibst.
+>
+> **Lass es prüfen.** Vor jeder Abgabe von einem Steuerberater durchsehen
+> lassen. `bh pruefen` findet Rechen- und Regelfehler, keine falsche
+> rechtliche Würdigung.
+
+## Was die Anwendung dagegenhält
 
 Damit die Arbeitsteilung trägt, muss die Anwendung dem Agenten widersprechen
-können. Vier Mechanismen tun das:
+können. Vier Dinge tun das:
 
 * **Regelprüfungen** (`bh pruefen`): Soll gleich Haben, Bankbestand gegen
   Kontoauszug, Zehn-Tage-Regel, § 11 EStG bei der Überschussrechnung.
 * **Platzhalter mit Auflösungsbedingung**: eine geschätzte Zahl trägt, warum
   sie geschätzt ist, worauf sie beruht und welcher Beleg sie ablösen würde.
 * **Abgabesperre** (`bh abgabe`): solange ein Platzhalter offen ist, sagt die
-  Anwendung nein. Nicht als Warnung – als Rückgabewert.
-* **Drilldown**: jede Zahl jeder Auswertung klappt bis zur Einzelbuchung und
-  zum Beleg auf. Was sich nicht bis zum Papier zurückverfolgen lässt, ist
-  keine Grundlage für eine Unterschrift.
+  Anwendung nein. Nicht als Warnung, sondern als Rückgabewert.
+* **Jede Zahl lässt sich aufklappen**: von der Summe im Bericht über die
+  Einzelbuchung bis zum Beleg. Was sich nicht bis zum Papier zurückverfolgen
+  lässt, ist keine Grundlage für eine Unterschrift.
 
 ## Loslegen
 
@@ -103,11 +161,10 @@ steht auch, wie eine kommerzielle Lizenz ohne diese Pflicht zu bekommen ist.
 Beiträge sind willkommen, siehe [`CONTRIBUTING.md`](CONTRIBUTING.md); sie
 werden unter der [CLA](CLA.md) angenommen.
 
-> **Diese Software rechnet, sie berät nicht.** Sie ersetzt weder Steuerberater
-> noch Wirtschaftsprüfer. Für Richtigkeit und Vollständigkeit der damit
-> erstellten Bücher, Abschlüsse und Erklärungen haftet allein, wer sie
-> einreicht. Die Zeilennummern der Formulare, Fristen und Steuersätze bilden
-> einen bestimmten Rechtsstand ab und veralten. Prüfe jedes Ergebnis.
+Zur Haftung siehe den Kasten unter
+[Nutzung auf eigenes Risiko](#%EF%B8%8F-nutzung-auf-eigenes-risiko): Die
+Software rechnet, sie berät nicht, und für das, was eingereicht wird, haftet
+allein, wer es einreicht.
 
 Eine Datenbank trägt **alle Mandanten** einer Art. Jeder führt seinen eigenen
 Kontenrahmen, seine eigene Gliederung und sein eigenes Belegarchiv; getrennt
