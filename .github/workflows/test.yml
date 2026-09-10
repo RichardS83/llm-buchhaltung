@@ -1,0 +1,29 @@
+name: Selbsttest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Poppler für den Belegimport
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+      - name: Selbsttest
+        run: python -m unittest discover -s tests -v
+      - name: Beispielmandant durchrechnen
+        run: |
+          ./bh --db /tmp/ci.sqlite init   beispiel 2025
+          ./bh --db /tmp/ci.sqlite eb     beispiel 2025 mandanten/beispiel/2025/eb.csv
+          ./bh --db /tmp/ci.sqlite buchen beispiel 2025 mandanten/beispiel/2025/buchungen.csv
+          ./bh --db /tmp/ci.sqlite report beispiel 2025 bilanz
+          ./bh --db /tmp/ci.sqlite pruefen beispiel 2025

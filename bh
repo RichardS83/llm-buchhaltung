@@ -1,0 +1,553 @@
+#!/usr/bin/env python3
+"""bh - kleine Buchhaltung, doppelte Buchfuehrung.
+
+Zwei Betriebsarten, dieselbe Mechanik:
+  * Kapitalgesellschaften nach HGB (Bilanz, GuV, Jahresabschluss)
+  * private Einkommensteuer nach § 11 EStG (Ueberschussrechnung, Anlage V)
+
+Die Datenbank waehlt `--db`. Vorgabe ist `buchhaltung.sqlite` (die
+Gesellschaften); die privaten Buchungen liegen in `privat.sqlite`, getrennt,
+weil bei einer Betriebspruefung nach § 147 Abs. 6 AO Datenzugriff auf die
+betrieblichen Daten besteht - eine gemeinsame Datei macht die Trennung dann
+zur Handarbeit.
+
+Aufrufe:
+  bh [--db <name>] <befehl> ...
+  bh init <mandant> <jahr>                 Mandant + Geschaeftsjahr + Kontenplan anlegen
+  bh eb <mandant> <jahr> <eb.csv>          Eroeffnungsbilanzwerte buchen
+  bh import-bank <mandant> <jahr> <pdf...> Commerzbank-Kontoauszuege einlesen
+  bh umsaetze <mandant> <jahr> [--offen] [--suche W] [--ab-betrag N]
+                                           importierte Bankumsaetze; Jahr 0 = alle
+  bh buchen <mandant> <jahr> <buchungen.csv>
+  bh beleg add <mandant> <datei> [opts]    Beleg ins Archiv legen
+  bh beleg scan <mandant> <ordner> [--jahr]
+  bh beleg list <mandant> [--jahr]
+  bh link <mandant> <jahr>                 Buchung <-> Bankumsatz <-> Beleg verknuepfen
+  bh vorjahr <mandant> <jahr>              Vorjahressalden aus dem Abschluss uebernehmen
+  bh report <mandant> <jahr> <was>         saldenliste|bilanz|guv|journal|belege
+  bh konto <mandant> <jahr> <kontonummer>
+  bh serve <mandant> <jahr> [--port]       Web-Oberflaeche starten
+  bh pruefen <mandant> <jahr>              Buchfuehrung auf Regelverstoesse pruefen
+  bh abgabe <mandant> <jahr>               Darf die Erklaerung abgegeben werden?
+  bh reset <mandant> <jahr>                alle Buchungen des Jahres loeschen
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from bhl import belege as blg
+from bhl import db, ledger, reports, verknuepfung, vorjahr
+from bhl.importers import commerzbank as coba
+from bhl.kontenplan import aus_mandant as rahmen_aus_mandant
+from bhl.kontenplan import lade as lade_rahmen
+
+WURZEL = os.path.dirname(os.path.abspath(__file__))
+DB = os.path.join(WURZEL, "buchhaltung.sqlite")
+
+
+def db_pfad(name: str) -> str:
+    """`--db` nimmt einen Kurznamen ('privat') oder einen vollen Pfad."""
+    if os.sep in name or name.endswith(".sqlite"):
+        return os.path.abspath(name)
+    return os.path.join(WURZEL, f"{name}.sqlite")
+
+
+def mandant_dir(kuerzel: str) -> str:
+    return os.path.join(WURZEL, "mandanten", kuerzel)
+
+
+def jahr_dir(kuerzel: str, jahr: int) -> str:
+    return os.path.join(mandant_dir(kuerzel), str(jahr))
+
+
+def lade_mandant(con, kuerzel: str):
+    r = con.execute("SELECT * FROM mandant WHERE kuerzel=?", (kuerzel,)).fetchone()
+    if not r:
+        sys.exit(f"Mandant '{kuerzel}' unbekannt. Zuerst 'bh init' ausfuehren.")
+    return r
+
+
+def gj(con, mandant_id: int, jahr: int) -> int:
+    r = con.execute("SELECT id FROM geschaeftsjahr WHERE mandant_id=? AND jahr=?",
+                    (mandant_id, jahr)).fetchone()
+    if not r:
+        sys.exit(f"Geschaeftsjahr {jahr} nicht angelegt.")
+    return r[0]
+
+
+def quelle_von(pfad: str) -> str:
+    """Kennung der Buchungsdatei, unter der ihre Buchungen in der Datenbank
+    stehen. Relativ zum Projekt, damit ein Umzug des Ordners sie nicht
+    umbenennt und derselbe Lauf von ueberall dasselbe Ergebnis hat."""
+    voll = os.path.abspath(pfad)
+    rel = os.path.relpath(voll, WURZEL)
+    return f"datei:{rel if not rel.startswith('..') else voll}"
+
+
+def einlesen(con, g: int, mandant_id: int, pfad: str, wort: str) -> None:
+    """Buchungsdatei einlesen und berichten, was sich geaendert hat.
+
+    Die Datei ist die Wahrheit, die Datenbank ihr Abbild: derselbe Lauf zweimal
+    aendert nichts. Was schon dasteht, behaelt Nummer, Bankumsatz und Beleg.
+    """
+    b = ledger.buchungen_aus_csv(con, g, mandant_id, pfad, quelle=quelle_von(pfad))
+    con.commit()
+    teile = [f"{b[k]} {wort2}" for k, wort2 in
+             (("neu", "neu"), ("uebernommen", "uebernommen"),
+              ("unveraendert", "unveraendert"), ("entfernt", "entfernt")) if b[k]]
+    print(f"{b['gesamt']} {wort} in {os.path.relpath(os.path.abspath(pfad), WURZEL)}"
+          f" ({', '.join(teile) or 'nichts geaendert'}).")
+
+
+# ----------------------------------------------------------------- Befehle
+
+def cmd_init(a):
+    con = db.connect(DB)
+    cfg_pfad = os.path.join(mandant_dir(a.mandant), "mandant.json")
+    if not os.path.exists(cfg_pfad):
+        sys.exit(f"Fehlt: {cfg_pfad}")
+    cfg = json.load(open(cfg_pfad, encoding="utf-8"))
+    bank = cfg.pop("bankkonten", [])
+    rahmen = lade_rahmen(cfg.get("kontenrahmen"), cfg)
+    # Was der Kontenrahmen aus der Konfiguration braucht, wandert mit in die
+    # Datenbank: Auswertungen bauen den Rahmen spaeter aus der Mandantenzeile
+    # auf und haben die Datei dann nicht zur Hand.
+    stamm = {k: cfg[k] for k in ("objekte", "kontobezeichnungen",
+                                 "kontoauszug_kopfzeilen", "belegregeln") if k in cfg}
+    cfg["stammdaten"] = json.dumps(stamm, ensure_ascii=False) if stamm else None
+    # mandant.json traegt auch Bloecke, die keine Spalte sind (z.B. "umsatzsteuer").
+    # Sie bleiben in der Datei und werden dort gelesen, wo sie gebraucht werden.
+    spalten = {r[1] for r in con.execute("PRAGMA table_info(mandant)")}
+    mid = ledger.mandant_anlegen(con, **{k: v for k, v in cfg.items() if k in spalten})
+    ledger.konten_anlegen(con, mid, rahmen.konten)
+    ledger.gj_anlegen(con, mid, a.jahr)
+    for b in bank:
+        con.execute("INSERT OR IGNORE INTO bankkonto (mandant_id, iban, bezeichnung,"
+                    " konto_id, nur_archiv) VALUES (?,?,?,?,?)",
+                    (mid, b["iban"], b["bezeichnung"], ledger.konto_id(con, mid, b["konto"]),
+                     1 if b.get("nur_archiv") else 0))
+    con.commit()
+    print(f"Mandant {cfg['name']} (id {mid}), Geschaeftsjahr {a.jahr}, Kontenrahmen "
+          f"{rahmen.name} mit {len(rahmen.konten)} Konten, {len(bank)} Bankkonten.")
+
+
+def cmd_eb(a):
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    einlesen(con, gj(con, m["id"], a.jahr), m["id"], a.datei, "Eroeffnungsbuchungen")
+
+
+def cmd_import_bank(a):
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    dateien = [f for muster in a.dateien for f in sorted(glob.glob(muster))]
+    stamm = json.loads(m["stammdaten"]) if m["stammdaten"] else {}
+    kopfzeilen = tuple(stamm.get("kontoauszug_kopfzeilen") or ())
+    ges_neu = ges_dopp = 0
+    for f in dateien:
+        auszug = coba.parse_auszug(f, kopfzeilen)
+        ok, diff = coba.pruefe(auszug)
+        bk = con.execute("SELECT id FROM bankkonto WHERE mandant_id=? AND iban=?",
+                         (m["id"], auszug.iban)).fetchone()
+        if not bk:
+            print(f"  ! IBAN {auszug.iban} nicht konfiguriert - {os.path.basename(f)} uebersprungen")
+            continue
+        neu = dopp = 0
+        for u in auszug.umsaetze:
+            if not u.buchungsdatum.startswith(str(a.jahr)):
+                continue
+            try:
+                con.execute("INSERT INTO banktransaktion (bankkonto_id, auszug, buchungsdatum,"
+                            " valuta, betrag_cent, text, hash) VALUES (?,?,?,?,?,?,?)",
+                            (bk[0], auszug.nummer, u.buchungsdatum, u.valuta,
+                             u.betrag_cent, u.text, u.hash))
+                neu += 1
+            except Exception:
+                dopp += 1
+        ges_neu += neu; ges_dopp += dopp
+        print(f"  {auszug.iban} Auszug {auszug.nummer}: {neu} neu, {dopp} bereits vorhanden, "
+              f"Kontrollrechnung {'OK' if ok else 'DIFFERENZ ' + db.eur(diff)}")
+    con.commit()
+    print(f"Gesamt: {ges_neu} neue Umsaetze, {ges_dopp} Dubletten.")
+
+
+def cmd_import_qonto(a):
+    from bhl.importers import qonto
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    z = qonto.importieren(con, m["id"], mandant_dir(a.mandant), a.jahr,
+                          mit_anhaengen=not a.ohne_belege)
+    con.commit()
+    for iban in z["unbekannte_iban"]:
+        print(f"  ! IBAN {iban} steht nicht in mandant.json - uebersprungen")
+    print(f"{z['neu']} neue Umsaetze, {z['dubletten']} bereits vorhanden, "
+          f"{z['belege']} Belege aus Qonto-Anhaengen abgelegt.")
+
+
+def cmd_import_stripe(a):
+    from bhl.importers import stripe as stripe_imp
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    z = stripe_imp.importieren(con, m["id"], mandant_dir(a.mandant), a.jahr)
+    con.commit()
+    for f in z["fehler"]:
+        print(f"  ! {f}")
+    print(f"{z['rechnungen']} Ausgangsrechnungen, {z['gutschriften']} Gutschriften abgelegt.\n"
+          f"{z['bewegungen']} Guthabenbewegungen neu, {z['dubletten']} bereits vorhanden, "
+          f"Gebuehren gesamt {db.eur(z['gebuehren_cent'])}.")
+
+
+def cmd_umsaetze(a):
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    # `jahr 0` sucht ueber alle Jahre - beim Archiv der privaten Konten der
+    # Normalfall, weil ein Vorgang selten in ein Kalenderjahr faellt.
+    jahr = "%" if a.jahr == 0 else f"{a.jahr}%"
+    werte = [m["id"], jahr]
+    q = ("SELECT t.id, k.iban, t.buchungsdatum, t.betrag_cent, t.text, t.buchung_id"
+         " FROM banktransaktion t JOIN bankkonto k ON k.id=t.bankkonto_id"
+         " WHERE k.mandant_id=? AND t.buchungsdatum LIKE ?"
+         + (" AND t.buchung_id IS NULL" if a.offen else ""))
+    for wort in (a.suche or []):
+        q += " AND t.text LIKE ?"
+        werte.append(f"%{wort}%")
+    if a.ab_betrag:
+        q += " AND ABS(t.betrag_cent) >= ?"
+        werte.append(int(round(float(a.ab_betrag.replace(".", "").replace(",", ".")) * 100)))
+    q += " ORDER BY t.buchungsdatum, t.id"
+    for r in con.execute(q, werte):
+        print(f"{r['id']:>4} {r['buchungsdatum']} {r['iban'][-4:]} "
+              f"{db.eur(r['betrag_cent']):>13}  {' '.join(r['text'].split())[:110]}")
+
+
+def cmd_buchen(a):
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    g = gj(con, m["id"], a.jahr)
+    einlesen(con, g, m["id"], a.datei, "Buchungen")
+    s, h = ledger.probe(con, g)
+    print(f"Summe Soll {db.eur(s)} / Haben {db.eur(h)} "
+          f"{'(ausgeglichen)' if s == h else '*** DIFFERENZ ***'}")
+
+
+def cmd_beleg(a):
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    md = mandant_dir(a.mandant)
+    if a.aktion == "add":
+        _, nr, neu = blg.erfassen(con, m["id"], md, a.ziel, jahr=a.jahr, datum=a.datum,
+                                  kategorie=a.kategorie, aussteller=a.aussteller,
+                                  bezeichnung=a.bezeichnung,
+                                  betrag_cent=db.cent(a.betrag) if a.betrag else None)
+        con.commit()
+        print(f"{nr} {'angelegt' if neu else 'bereits vorhanden'}")
+    elif a.aktion == "scan":
+        neu, alt = blg.scannen(con, m["id"], md, a.ziel, jahr=a.jahr)
+        con.commit()
+        print(f"{neu} Belege neu abgelegt, {alt} bereits vorhanden.")
+    elif a.aktion == "list":
+        print(reports.belegliste(con, m["id"], a.jahr))
+
+
+def cmd_report(a):
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    g = gj(con, m["id"], a.jahr)
+    vj = vorjahr.gj_id(con, m["id"], a.jahr - 1)
+    text = {
+        "saldenliste": lambda: reports.saldenliste(con, g),
+        "bilanz": lambda: reports.bilanz(con, g, vj),
+        "guv": lambda: reports.guv(con, g, vj),
+        "journal": lambda: reports.journal(con, g),
+        "belege": lambda: reports.belegliste(con, m["id"], a.jahr),
+        "anlagen": lambda: reports.anlagen(con, g, vj),
+    }[a.was]()
+    print(text)
+    if a.out:
+        open(a.out, "w", encoding="utf-8").write(text + "\n")
+
+
+def cmd_import_est(a):
+    """Eine ausgefertigte Einkommensteuererklaerung als Vergleichsjahr buchen."""
+    from bhl.importers import est_erklaerung as est
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    anlagen = est.anlagen_v(a.datei)
+    mantel = est.mantelbogen(a.datei)
+    g = ledger.gj_anlegen(con, m["id"], a.jahr)
+    con.execute("DELETE FROM buchung WHERE gj_id=? AND art='vorjahr'", (g,))
+    for datum, text, zeilen in (est.buchungszeilen(anlagen, a.jahr)
+                                + [est.mantel_buchung(mantel, a.jahr)]):
+        ledger.buchen(con, g, m["id"], datum, text, zeilen,
+                      belegfeld=f"ESt{a.jahr}", art="vorjahr")
+    con.execute("UPDATE geschaeftsjahr SET status='abgeschlossen' WHERE id=?", (g,))
+    con.commit()
+    for x in anlagen:
+        print(f"  Anlage V Nr. {x.nr}: Einnahmen {x.einnahmen:>9} ./. Werbungskosten "
+              f"{x.werbungskosten:>9} = {x.ergebnis:>9}")
+    print(f"  Vermietung und Verpachtung gesamt {sum(x.ergebnis for x in anlagen):>25}")
+    print(f"  Gesamtbetrag der Einkünfte        {mantel['gesamtbetrag']:>25}")
+    print(f"  zu versteuerndes Einkommen        {mantel['zve']:>25}")
+    print(f"\n{len(anlagen)} Anlagen V und der Mantelbogen aus "
+          f"{os.path.basename(a.datei)} gebucht.")
+
+
+def cmd_pruefen(a):
+    from bhl import pruefung
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    g = gj(con, m["id"], a.jahr)
+    d = pruefung.alles(con, g, rahmen_aus_mandant(m),
+                       jahr_dir(a.mandant, a.jahr))
+    for b in d["befunde"]:
+        print(f"[{b['schwere']:>7}] {b['text']}")
+    if not d["befunde"]:
+        print(f"{m['name']} {a.jahr}: keine Beanstandungen.")
+    else:
+        print(f"\n{d['fehler']} Fehler, {d['hinweise']} Hinweise.")
+    sys.exit(1 if d["fehler"] else 0)
+
+
+def cmd_abgabe(a):
+    """Die Freigabe vor der Abgabe - ein Befehl, der Nein sagen kann.
+
+    Die Erklaerung wird von Hand in Mein Elster uebertragen; es gibt keinen
+    Knopf, den ein Programm sperren koennte. Was sich sperren laesst, ist die
+    Aussage "sie ist fertig". Genau die gibt dieser Befehl - oder eben nicht,
+    mit Rueckgabewert 1, damit auch ein Skript daran haengen kann.
+    """
+    from bhl import fristen, pruefung
+    from bhl import steuern as st
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    g = gj(con, m["id"], a.jahr)
+    rahmen = rahmen_aus_mandant(m)
+    jd = jahr_dir(a.mandant, a.jahr)
+
+    spec = st.laden(jd)
+    if spec is None:
+        sys.exit(f"Fehlt: {os.path.join(jd, 'steuern.json')}")
+    offen = st.platzhalter(spec)
+
+    art = "einkommensteuer" if rahmen.ueberschussrechnung else "koerperschaftsteuer"
+    ende = con.execute("SELECT ende FROM geschaeftsjahr WHERE id=?", (g,)).fetchone()[0]
+    import datetime as _dt
+    termine = fristen.jahrespflichten(
+        mandant_dir(a.mandant), a.jahr, ende, _dt.date.today(),
+        kapitalgesellschaft=not rahmen.ueberschussrechnung,
+        umsatzsteuerpflichtig=not rahmen.ueberschussrechnung)
+    frist = next((t for t in termine if t["art"] == art), None)
+
+    print(f"{m['name']} — Steuererklärung {a.jahr}")
+    if frist:
+        print(f"{frist['bezeichnung']}: Frist {fristen._kurz(frist['faellig'])}"
+              f" ({frist['grundlage']}), Status {frist['status']}")
+    print()
+
+    for p in offen:
+        print(f"  PLATZHALTER  {p['zeile']}  {db.eur(p['betrag'])} EUR")
+        if p.get("annahme"):
+            print(f"               angenommen:      {p['annahme']}")
+        if p.get("grund"):
+            print(f"               Grund:           {p['grund']}")
+        if p.get("aufloesen_durch"):
+            print(f"               aufzulösen durch: {p['aufloesen_durch']}")
+        print()
+
+    d = pruefung.alles(con, g, rahmen)
+    for b in d["befunde"]:
+        if b["schwere"] == "fehler":
+            print(f"  FEHLER       {b['text']}")
+
+    gesperrt = bool(offen) or d["fehler"]
+    print()
+    if gesperrt:
+        teile = []
+        if offen:
+            teile.append(f"{len(offen)} Platzhalter")
+        if d["fehler"]:
+            teile.append(f"{d['fehler']} Fehler in der Buchführung")
+        print(f"GESPERRT — {' und '.join(teile)}. Die Erklärung ist nicht abgabefähig.")
+    else:
+        print("FREI — keine Platzhalter, keine Fehler. Die Erklärung kann abgegeben werden.")
+    sys.exit(1 if gesperrt else 0)
+
+
+def cmd_ustva(a):
+    import csv as _csv
+
+    from bhl import umsatzsteuer as ust
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+
+    # Abgabestand aus mandanten/<kuerzel>/voranmeldungen.csv nachziehen
+    stand_datei = os.path.join(mandant_dir(a.mandant), "voranmeldungen.csv")
+    if os.path.exists(stand_datei):
+        with open(stand_datei, encoding="utf-8") as fh:
+            zeilen = [z for z in fh if not z.lstrip().startswith("#")]
+        for r in _csv.DictReader(zeilen, delimiter=";"):
+            z = ust.zeitraum_aus_code(int(r["jahr"]), r["zeitraum"])
+            ust.festhalten(con, m["id"], z, (r["status"] or "offen").strip(),
+                           transferticket=(r.get("transferticket") or "").strip() or None,
+                           abgegeben_am=(r.get("abgegeben_am") or "").strip() or None,
+                           zahlung_am=(r.get("zahlung_am") or "").strip() or None,
+                           notiz=(r.get("notiz") or "").strip() or None,
+                           art=(r.get("art") or "ustva").strip())
+        con.commit()
+
+    zeitraeume = [z for z in ust.quartale(con, m["id"]) if z.jahr == a.jahr]
+    if a.quartal:
+        zeitraeume = [z for z in zeitraeume if z.quartal == a.quartal]
+    for z in zeitraeume:
+        print(ust.eingabeblatt(con, m["id"], z, mandant_dir(a.mandant)))
+        print()
+
+
+def cmd_link(a):
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    g = gj(con, m["id"], a.jahr)
+    r = verknuepfung.alles(con, m["id"], g, os.path.join(mandant_dir(a.mandant), str(a.jahr)))
+    con.commit()
+    print(f"{r['bankumsaetze']} Bankumsaetze mit ihrer Buchung verknuepft,\n"
+          f"{r['kontoauszuege']} Buchungen an ihren Kontoauszug gehaengt,\n"
+          f"{r['manuell']} Verknuepfungen aus belege_zuordnung.csv,\n"
+          f"{r['ohne_buchung']} Umsaetze als bewusst nicht gebucht vermerkt.")
+    for f in r["fehler"]:
+        print(f"  ! {f}")
+    o = verknuepfung.offen(con, m["id"], g)
+    print(f"Offen: {o['umsaetze_ohne_buchung']} Bankumsaetze ohne Buchung, "
+          f"{o['buchungen_ohne_beleg']} Buchungen ohne Beleg, "
+          f"{o['belege_ohne_buchung']} Belege ohne Buchung.")
+
+
+def cmd_vorjahr(a):
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    r = vorjahr.uebernehmen(con, m["id"], a.jahr,
+                            os.path.join(mandant_dir(a.mandant), str(a.jahr)))
+    con.commit()
+    print(f"Geschaeftsjahr {a.jahr} uebernommen: {r['konten']} Konten, "
+          f"Bilanzsumme/Buchungssumme {db.eur(r['summe'])},\n"
+          f"Jahresergebnis {db.eur(r['ergebnis'])}, "
+          f"Einstellung in Ruecklagen {db.eur(r['verwendung'])}.")
+
+
+def cmd_serve(a):
+    from bhl import web
+    # Die Oberflaeche zeigt beide Datenbanken nebeneinander - die Dateien
+    # bleiben getrennt, der Umschalter im Kopf nicht.
+    pfade = [DB] + [p for p in (db_pfad("buchhaltung"), db_pfad("privat"))
+                    if p != DB and os.path.exists(p)]
+    web.starten(pfade, WURZEL, a.mandant, a.jahr, a.port, oeffnen=not a.kein_browser)
+
+
+def cmd_konto(a):
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    print(reports.kontoblatt(con, gj(con, m["id"], a.jahr), a.nummer))
+
+
+def cmd_reset(a):
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    g = gj(con, m["id"], a.jahr)
+    con.execute("UPDATE banktransaktion SET buchung_id=NULL WHERE buchung_id IN "
+                "(SELECT id FROM buchung WHERE gj_id=?)", (g,))
+    con.execute("DELETE FROM buchung WHERE gj_id=?", (g,))
+    con.commit()
+    print(f"Buchungen {a.jahr} geloescht.")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="bh", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--db", default="buchhaltung",
+                   help="Datenbank: Kurzname ('privat') oder Pfad. Vorgabe: buchhaltung")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("init"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.set_defaults(f=cmd_init)
+
+    s = sub.add_parser("eb"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.add_argument("datei"); s.set_defaults(f=cmd_eb)
+
+    s = sub.add_parser("import-bank"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.add_argument("dateien", nargs="+"); s.set_defaults(f=cmd_import_bank)
+
+    s = sub.add_parser("import-qonto"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.add_argument("--ohne-belege", action="store_true",
+                   help="nur Umsaetze holen, keine Anhaenge herunterladen")
+    s.set_defaults(f=cmd_import_qonto)
+
+    s = sub.add_parser("import-stripe"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.set_defaults(f=cmd_import_stripe)
+
+    s = sub.add_parser("umsaetze"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.add_argument("--offen", action="store_true")
+    s.add_argument("--suche", action="append", metavar="WORT",
+                   help="nur Umsaetze, deren Text das Wort enthaelt; mehrfach = und")
+    s.add_argument("--ab-betrag", metavar="EUR",
+                   help="nur Umsaetze ab diesem Betrag, Vorzeichen egal")
+    s.set_defaults(f=cmd_umsaetze)
+
+    s = sub.add_parser("buchen"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.add_argument("datei"); s.set_defaults(f=cmd_buchen)
+
+    s = sub.add_parser("beleg")
+    s.add_argument("aktion", choices=["add", "scan", "list"])
+    s.add_argument("mandant"); s.add_argument("ziel", nargs="?")
+    s.add_argument("--jahr", type=int); s.add_argument("--datum")
+    s.add_argument("--kategorie"); s.add_argument("--aussteller")
+    s.add_argument("--bezeichnung"); s.add_argument("--betrag")
+    s.set_defaults(f=cmd_beleg)
+
+    s = sub.add_parser("report"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.add_argument("was", choices=["saldenliste", "bilanz", "guv", "journal", "belege",
+                                   "anlagen"])
+    s.add_argument("--out"); s.set_defaults(f=cmd_report)
+
+    s = sub.add_parser("pruefen"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.set_defaults(f=cmd_pruefen)
+
+    s = sub.add_parser("abgabe"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.set_defaults(f=cmd_abgabe)
+
+    s = sub.add_parser("import-est"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.add_argument("datei"); s.set_defaults(f=cmd_import_est)
+
+    s = sub.add_parser("ustva"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.add_argument("--quartal", type=int, choices=[1, 2, 3, 4])
+    s.set_defaults(f=cmd_ustva)
+
+    s = sub.add_parser("link"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.set_defaults(f=cmd_link)
+
+    s = sub.add_parser("vorjahr"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.set_defaults(f=cmd_vorjahr)
+
+    s = sub.add_parser("serve"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--kein-browser", action="store_true"); s.set_defaults(f=cmd_serve)
+
+    s = sub.add_parser("konto"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.add_argument("nummer"); s.set_defaults(f=cmd_konto)
+
+    s = sub.add_parser("reset"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.set_defaults(f=cmd_reset)
+
+    a = p.parse_args()
+    global DB
+    DB = db_pfad(a.db)
+    a.f(a)
+
+
+if __name__ == "__main__":
+    main()

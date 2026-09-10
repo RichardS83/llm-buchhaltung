@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jahresabschluss</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<nav id="nav">
+  <div class="marke">
+    <strong id="firma">…</strong>
+    <span id="periode"></span>
+    <div class="wechsel">
+      <select id="mandantwahl" title="Mandant wechseln"></select>
+      <select id="jahrwahl" title="Geschäftsjahr wechseln"></select>
+    </div>
+    <div class="wechsel breit">
+      <select id="zeitraumwahl" title="Zeitraum eingrenzen"></select>
+    </div>
+  </div>
+  <ul class="menue">
+    <li><a href="#/uebersicht" data-seite="uebersicht">Übersicht</a></li>
+    <li class="gruppe" data-art="privat">Einkommensteuer</li>
+    <li data-art="privat"><a href="#/anlagen" data-seite="anlagen">Vermietung und Verpachtung</a></li>
+    <li class="gruppe" data-art="gesellschaft">Abschluss</li>
+    <li><a href="#/bilanz" data-seite="bilanz">Bilanz</a></li>
+    <li><a href="#/guv" data-seite="guv">Gewinn- und Verlustrechnung</a></li>
+    <li><a href="#/steuern" data-seite="steuern">Steuererklärungen</a></li>
+    <li><a href="#/offen" data-seite="offen">Offene Punkte<span id="offenzahl" class="nav-zahl" hidden></span></a></li>
+    <li class="gruppe" data-art="gesellschaft">Umsatzsteuer</li>
+    <li data-art="gesellschaft"><a href="#/ust" data-seite="ust">Voranmeldungen</a></li>
+    <li class="gruppe">Buchhaltung</li>
+    <li data-art="privat"><a href="#/pruefung" data-seite="pruefung">Prüfungen</a></li>
+    <li><a href="#/konten" data-seite="konten">Konten</a></li>
+    <li><a href="#/journal" data-seite="journal">Journal</a></li>
+    <li><a href="#/bank" data-seite="bank">Bankumsätze</a></li>
+    <li><a href="#/belege" data-seite="belege">Belege</a></li>
+    <li class="gruppe">Unterlagen</li>
+    <li id="dokumentliste"></li>
+  </ul>
+  <div class="fuss">
+    <span id="bestand"></span>
+  </div>
+</nav>
+
+<main id="inhalt"><div class="laedt">lädt …</div></main>
+
+<aside id="schublade" hidden>
+  <header>
+    <span id="schublade-titel"></span>
+    <button type="button" id="schublade-zu" title="Schließen (Esc)">×</button>
+  </header>
+  <div id="schublade-inhalt"></div>
+</aside>
+
+<div id="viewer" hidden>
+  <header>
+    <span id="viewer-titel"></span>
+    <span class="wachs"></span>
+    <a id="viewer-neu" target="_blank" rel="noopener">in neuem Tab öffnen</a>
+    <button type="button" id="viewer-zu" title="Schließen (Esc)">×</button>
+  </header>
+  <div id="viewer-inhalt"></div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

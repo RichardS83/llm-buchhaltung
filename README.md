@@ -1,0 +1,585 @@
+# bh – Buchhaltung
+
+Kleine, nachvollziehbare doppelte Buchführung – für Kapitalgesellschaften nach
+HGB (mit Umsatzsteuer-Voranmeldung) **und** für die private Einkommensteuer.
+Python-Standardbibliothek, SQLite, keine externen Abhängigkeiten außer
+`pdftotext` (poppler) für den Belegimport. **Keine LLM-API** – die Kontierung
+macht ein Mensch (oder Claude in der Session), die App rechnet und prüft.
+
+Zwei Betriebsarten, dieselbe Mechanik:
+
+| | Kapitalgesellschaft | private Einkommensteuer |
+|---|---|---|
+| Periodisierung | Realisationsprinzip (HGB) | Zufluss/Abfluss (§ 11 EStG) |
+| Rechenwerke | Bilanz, GuV | Vermögensübersicht, Ermittlung des zu versteuernden Einkommens |
+| Formulare | Jahresabschluss, KSt/GewSt, UStVA | Anlage V je Objekt, Anlage N, KAP, S |
+| Datenbank | `buchhaltung.sqlite` | `privat.sqlite` (`bh --db privat`) |
+
+Buchen, Belegarchiv, Bankimport, Auswertungsmaschine und Oberfläche sind
+identisch – der Unterschied steckt im Kontenrahmen und in einer Prüfung.
+
+## Loslegen
+
+Voraussetzung ist Python 3.11 oder neuer. Für den Belegimport zusätzlich
+`pdftotext` (in Poppler enthalten: `brew install poppler`, `apt install
+poppler-utils`). Sonst nichts – keine Pakete, keine Datenbank, kein Dienst.
+
+```bash
+git clone https://github.com/RichardS83/bh-buchhaltung.git
+cd bh-buchhaltung
+
+./bh init   beispiel 2025
+./bh eb     beispiel 2025 mandanten/beispiel/2025/eb.csv
+./bh buchen beispiel 2025 mandanten/beispiel/2025/buchungen.csv
+./bh report beispiel 2025 bilanz
+./bh pruefen beispiel 2025
+./bh serve  beispiel 2025          # Oberfläche auf http://127.0.0.1:8080
+
+python3 -m unittest discover -s tests -q    # Selbsttest
+```
+
+## Lizenz und Haftung
+
+**AGPL-3.0.** Wer die Software ändert und über ein Netzwerk anbietet, muss den
+geänderten Quelltext den Nutzern zugänglich machen (§ 13 AGPL). Der volle Text
+steht in [`LICENSE`](LICENSE), die Randbedingungen in [`NOTICE`](NOTICE) – dort
+steht auch, wie eine kommerzielle Lizenz ohne diese Pflicht zu bekommen ist.
+
+Beiträge sind willkommen, siehe [`CONTRIBUTING.md`](CONTRIBUTING.md); sie
+werden unter der [CLA](CLA.md) angenommen.
+
+> **Diese Software rechnet, sie berät nicht.** Sie ersetzt weder Steuerberater
+> noch Wirtschaftsprüfer. Für Richtigkeit und Vollständigkeit der damit
+> erstellten Bücher, Abschlüsse und Erklärungen haftet allein, wer sie
+> einreicht. Die Zeilennummern der Formulare, Fristen und Steuersätze bilden
+> einen bestimmten Rechtsstand ab und veralten. Prüfe jedes Ergebnis.
+
+Eine Datenbank trägt **alle Mandanten** einer Art. Jeder führt seinen eigenen
+Kontenrahmen, seine eigene Gliederung und sein eigenes Belegarchiv; getrennt
+wird über `mandant_id`. Die privaten Buchungen liegen in einer **eigenen
+Datei**, weil bei einer Betriebsprüfung nach § 147 Abs. 6 AO Datenzugriff auf
+die betrieblichen Daten besteht – die Oberfläche zeigt trotzdem beide
+nebeneinander.
+
+```
+buchhaltung/
+├── bh                        CLI
+├── bhl/
+│   ├── db.py                 Schema, Cent-Arithmetik (nie float)
+│   ├── kontenplan/           Kontenrahmen je Mandant
+│   │   ├── holding.py          SKR04-HOLDING – Beteiligungsholding ohne USt
+│   │   ├── operativ.py         SKR04-OPERATIV – operativ, mit USt und Reverse Charge
+│   │   └── privat.py           PRIVAT-ESt – Überschussrechnung, Anlage V je Objekt
+│   ├── ledger.py             Buchen, Salden, Summenprobe
+│   ├── belege.py             Belegarchiv, Klassifizierung, Hash-Dublettenschutz
+│   ├── verknuepfung.py       Buchung <-> Bankumsatz <-> Beleg
+│   ├── vorjahr.py            Vorjahressalden aus dem Abschluss übernehmen
+│   ├── steuern.py            steuerliche Überleitung gegen die Konten prüfen
+│   ├── pruefung.py           Regelprüfungen (Soll=Haben, § 11 EStG, Zehn-Tage-Regel)
+│   ├── umsatzsteuer.py       Voranmeldung und Zusammenfassende Meldung
+│   ├── rechnungsust.py       gedruckte Umsatzsteuer vom Rechnungs-PDF ablesen
+│   ├── zugang.py             Zugangsdaten aus dem Schlüsselbund
+│   ├── reports.py            Saldenliste, Bilanz, GuV, Kontoblatt, Journal
+│   ├── web.py                lokale Weboberfläche (nur lesend)
+│   ├── static/               index.html, app.css, app.js
+│   └── importers/
+│       ├── commerzbank.py    Kontoauszug-PDF (drei Vordruckgenerationen) und CSV-Export
+│       ├── qonto.py          Bankumsätze und angehängte Rechnungen
+│       └── stripe.py         Ausgangsrechnungen und Guthabenbewegungen
+├── tests/                    Selbsttest (Standardbibliothek, kein pytest)
+├── buchhaltung.sqlite        Datenbank (alle Mandanten und Jahre, nicht im Repo)
+└── mandanten/<kürzel>/
+    ├── mandant.json          Stammdaten, Bankkonten, Umsatzsteuer-Einstellungen
+    ├── voranmeldungen.csv    was tatsächlich ans Finanzamt übermittelt wurde
+    ├── belege/<jahr>/<kategorie>/   Belegarchiv
+    └── <jahr>/               eb.csv, buchungen.csv, steuern.json, Berichte
+```
+
+## Grundsätze
+
+* **Beträge sind Integer in Cent.** Keine Fließkommazahlen im Rechenweg.
+* **Jede Buchung muss ausgeglichen sein** – sonst wird sie abgelehnt.
+* **Jeder Bankumsatz wird geprüft**: Anfangssaldo + Summe der Umsätze muss den
+  Endsaldo des Auszugs ergeben, sonst meldet der Import eine Differenz.
+* **Jeder Bankumsatz wird erklärt**: entweder gebucht oder mit Grund als
+  bewusst nicht gebucht vermerkt (`nicht_gebucht.csv`). Keine stille Lücke.
+* **Dublettenschutz** über einen Hash aus Datum, Betrag und Text.
+* **Die Buchungsdatei ist die Wahrheit, die Datenbank ihr Abbild.** `bh buchen`
+  und `bh eb` lassen sich beliebig oft auf dieselbe Datei anwenden: was
+  unverändert dasteht, bleibt unangetastet – samt Journalnummer, verknüpftem
+  Bankumsatz und Beleg –, Neues kommt dazu, was aus der Datei verschwunden ist,
+  wird gelöscht. Der übliche Weg nach neuen Umsätzen ist deshalb
+  `erzeuge_buchungen.py` und dann `bh buchen`, ohne `bh reset` davor.
+* **Das Bankkonto wird gegen die Bank gehalten**: die Bewegung des Sachkontos im
+  Jahr muss der Summe aller importierten Bankumsätze entsprechen. Das ist die
+  einzige Kontrolle, die eine doppelt eingebuchte Bewegung findet – die
+  Summenprobe kann es nicht, weil eine Dublette in sich ausgeglichen ist und
+  auch die Bilanz weiter aufgeht.
+* **Belege** liegen als Kopie im Archiv, referenziert über eine fortlaufende
+  Belegnummer (`B2025-0042`), die im Buchungssatz steht.
+* **Vorjahreszahlen kommen aus der Datenbank**, nicht aus einer gepflegten
+  Zahlenliste – auch für Jahre, deren Buchungen nicht vorliegen (`bh vorjahr`).
+* **Die Steuererklärung wird gegen die Buchhaltung gehalten**: jede Zeile der
+  Überleitungsrechnung, die auf Konten verweist, muss deren Saldo treffen.
+* **Privat gilt § 11 EStG**, und das wird geprüft, nicht der Disziplin
+  überlassen: jede erfolgswirksame Buchung muss ein Geldkonto berühren. Die
+  einzigen Ausnahmen sind die beiden, die das Gesetz selbst verlangt – AfA
+  (§ 7 EStG) und die Verteilung von Erhaltungsaufwand (§ 82b EStDV).
+
+## Ablauf für ein Geschäftsjahr
+
+```bash
+./bh init beispiel 2025                    # Mandant, Jahr, Kontenplan
+./bh eb   beispiel 2025 mandanten/beispiel/2025/eb.csv
+./bh import-bank beispiel 2025 'pfad/Kontoauszug_*.pdf'
+./bh umsaetze beispiel 2025 --offen        # Arbeitsliste zum Kontieren
+./bh --db privat umsaetze privat 0 --suche Musterstr --ab-betrag 5000   # Archivsuche
+./bh buchen beispiel 2025 mandanten/beispiel/2025/buchungen.csv
+./bh beleg scan beispiel /pfad/zum/ordner --jahr 2025
+./bh link beispiel 2025                    # Buchung <-> Umsatz <-> Beleg
+./bh vorjahr beispiel 2024                 # Vorjahresvergleich (einmalig)
+./bh report beispiel 2025 bilanz
+./bh serve  beispiel 2025                  # Oberfläche im Browser
+```
+
+`import-bank` liest drei Generationen des Commerzbank-Vordrucks: den heutigen,
+den **gesperrt gesetzten** (jeder Buchstabe einzeln — `pdftotext -layout` macht
+daraus Wörter aus einem Zeichen, deshalb werden dort die Glyphenkoordinaten
+gelesen) und den alten ohne IBAN, bei dem die Kontoverbindung aus Kontonummer
+und Bankleitzahl gebildet wird. Erkannt wird das automatisch. Jeder Auszug wird
+über `alter Kontostand + Summe der Umsätze = neuer Kontostand` geprüft; die
+Kontrollrechnung steht in der Ausgabe.
+
+Ein Bankkonto kann in `mandant.json` als `"nur_archiv": true` geführt werden.
+Dann liegen seine Umsätze vollständig und durchsuchbar in der Datenbank, ohne
+dass `bh pruefen` einen Abgleich mit dem Sachkonto verlangt — so sind die
+privaten Commerzbank-Konten abgelegt, bei denen objektweise aus der Anlage V
+gebucht wird und nicht über den Kontoauszug. `bh umsaetze <mandant> 0` sucht
+über alle Jahre, `--suche` filtert im Buchungstext (mehrfach = und).
+
+Statt der Commerzbank-PDFs kann die Bank auch über eine Schnittstelle kommen:
+`bh import-qonto` und `bh import-stripe` holen Umsätze und Belege direkt. Die
+Zugangsdaten liegen im Schlüsselbund von macOS (siehe `bhl/zugang.py`), nie in
+einer Datei dieses Verzeichnisses.
+
+## Oberfläche
+
+`./bh serve <mandant> <jahr>` startet einen lokalen Server auf 127.0.0.1 (Port
+8765) und öffnet den Browser. Der Server **liest nur** – gebucht wird
+ausschließlich über die CLI.
+
+**Jede Zahl lässt sich aufklappen.** Das ist der tragende Grundsatz der
+Oberfläche und gilt für jede Seite, nicht nur für einzelne:
+
+```
+Bilanz-/GuV-Posten ┐
+Zeile der Anlage V ├→ Konto → Buchungszeile → Buchungssatz → Bankumsatz → Beleg-PDF
+Zeile der Steuererklärung ┤
+Zeile der Saldenliste ─────┘
+```
+
+Ein Klick auf eine Zeile zeigt die Konten dahinter, ein Klick auf ein Konto
+seine Buchungen, ein Klick auf eine Buchung den vollständigen Satz mit dem
+Rohtext des Kontoauszugs, ein Klick auf den Beleg das PDF – alles ohne die
+Seite zu verlassen. Daneben führt jeweils ein Verweis *Kontoblatt ›* auf das
+Konto mit Anfangsbestand und laufendem Saldo. Der Zustand steht im
+Adressfragment (`#/konto/1309?buchung=180&beleg=42`), Zurück-Taste und
+Lesezeichen funktionieren also bis auf Belegebene.
+
+Wer eine Seite ergänzt, die Beträge aus Konten zeigt, hängt sie an dieselbe
+Kette: `/api/buchungen/<konto>,<konto>,…` liefert die Buchungszeilen, im
+Frontend erzeugen `einbauZeile()` und der zentrale Klick-Empfänger den Rest.
+Eine Zahl ohne Weg zu ihrer Herkunft ist eine Behauptung.
+
+Die Übersicht zeigt zusätzlich eine Ergebnisbrücke – welcher Sachverhalt das
+Jahresergebnis in welcher Höhe geprägt hat –, eine Fristenliste und eine
+Prüfliste (Summenprobe, Bilanzausgleich, unerklärte Bankumsätze, Abweichungen
+der Steuererklärung).
+
+**Fristen und Prüfungen sind zweierlei und stehen deshalb getrennt.** Ein
+Befund der Prüfliste heißt, dass in der Buchführung etwas nicht stimmt. Eine
+angemeldete, noch nicht gezahlte Zahllast ist dagegen kein Mangel, sondern ein
+Termin – sie wird am 10. fällig und ist bis dahin in Ordnung. Stünde sie in
+derselben Liste, wäre die Prüfliste dauerhaft rot, und irgendwann sieht niemand
+mehr hin.
+
+## Offene Punkte und fehlende Belege
+
+Ein fertiger Abschluss ist selten fertig: Fristen laufen, Feststellungen fehlen,
+Zuordnungen brauchen eine Bestätigung. `<jahr>/offene_punkte.json` hält das
+fest — je Punkt Art (`feststellung`, `frist`, `entscheidung`, `unterlage`,
+`klaerung`, `hinweis`), Status, Priorität, Adressat, Frist und die Wirkung in
+Euro. Die Oberfläche zeigt sie unter *Offene Punkte*, gruppiert und mit der Zahl
+der offenen Punkte am Menüeintrag.
+
+**Welche Buchungen keinen Beleg haben, steht nicht in der Datei.** Das zieht
+`bhl/offen.py` bei jedem Aufruf aus der Buchführung; eine gepflegte Liste würde
+sonst nach der ersten Verknüpfung etwas Falsches behaupten. Aus der Datei kommt
+nur die Anmerkung dazu: `beschaffung` sagt, wo der Beleg zu holen ist,
+`unkritisch` sagt, warum keiner nötig ist — Abschlussbuchungen haben keinen
+Fremdbeleg und sollen die Liste nicht dauerhaft rot färben.
+
+### Prüfung eines fertigen Abschlusses
+
+Wird ein fertiger Abschluss nachgeprüft, kommen die Feststellungen als Punkte
+mit `"art": "feststellung"` in dieselbe Datei — daneben ein Block `pruefung`
+mit dem Rahmen der Prüfung, den Grundlagen und der Liste dessen, was geprüft
+wurde und stimmt. Aus beidem erzeugt `erzeuge_texte.py` den Bericht
+`pruefung_<jahr>.md`; die Oberfläche zeigt die Feststellungen als erste Gruppe
+unter *Offene Punkte* und den Bericht unter *Unterlagen*.
+
+Feststellungen bleiben nach der Umsetzung sichtbar: der Status `behoben`
+(„korrigiert") zeigt, was aus den Belegen eindeutig folgte und deshalb bereits
+gebucht oder im Text geändert wurde. Anders als `erledigt` verschwindet er nicht
+in die Erledigt-Gruppe, sondern bleibt in der Prüfungsliste stehen — ein
+Prüfbericht, aus dem die behobenen Punkte verschwinden, lässt nicht mehr
+erkennen, was geprüft wurde.
+
+Die Feststellungen stehen damit an derselben Stelle wie die übrigen offenen
+Punkte und nicht in einem Dokument daneben. Ein Prüfungsbericht, den man
+gesondert öffnen muss, wird beim nächsten Arbeitsschritt nicht gelesen.
+
+`<jahr>/erzeuge_texte.py` schreibt daraus die Lesefassung `offene_punkte.md`,
+damit derselbe Stand auch gedruckt vorliegt.
+
+**Warum:** Am 25.07.2026 stand die größte Lücke des Abschlusses 2025 — die
+vollständig fehlenden Kartenumsätze des Moss-Kontos — nur in einer
+Markdown-Datei, während die Oberfläche einen abgeschlossenen Abschluss zeigte.
+
+## Fristen
+
+Welche Jahrespflichten anfallen, hängt am Kontenrahmen: eine Kapitalgesellschaft
+schuldet Körperschaft- und Gewerbesteuererklärung, Aufstellung und Offenlegung,
+die private Rechnung die Einkommensteuererklärung.
+
+Eine bewilligte Fristverlängerung nach § 109 AO steht in `fristen.csv` als
+`status = verlaengert` mit dem neuen Datum in `erledigt_am`. Sie tritt an die
+Stelle der gesetzlichen Frist, die Pflicht bleibt aber offen — ohne diesen
+Zustand meldet die Liste eine längst verlängerte Frist als überfällig, und die
+gesetzliche Frist bliebe unsichtbar. Die Zeile nennt beide.
+
+`bhl/fristen.py` stellt zusammen, was ansteht: Voranmeldungen und ihre
+Zahlungen, Zusammenfassende Meldungen, Steuererklärungen, Aufstellung und
+Offenlegung des Jahresabschlusses.
+
+Die laufenden Termine kommen aus der Buchführung. Die jährlichen rechnet die
+App aus Gesetz und Stichtag, statt sie zu pflegen – jede Zeile nennt ihre
+Grundlage, damit die Annahme sichtbar bleibt:
+
+| Pflicht | Frist | Grundlage |
+|---|---|---|
+| Steuererklärungen | 31.07. des Folgejahres | § 149 Abs. 2 AO |
+| … wenn steuerlich beraten | Ende Februar des zweiten Folgejahres | § 149 Abs. 3 AO |
+| Jahresabschluss aufstellen | 3 Monate, kleine 6 Monate | § 264 Abs. 1 S. 2 / S. 3 HGB |
+| Offenlegung | 12 Monate nach dem Stichtag | § 325 Abs. 1a HGB |
+| … Kleinstkapitalgesellschaft | Hinterlegung statt Offenlegung | § 326 Abs. 2 HGB |
+
+Zwei Angaben steuern das, beide in `mandant.json` unter `"fristen"`:
+`steuerlich_beraten` und `groessenklasse` (`kleinst` | `klein` | `mittel`).
+Fällt ein Termin auf Samstag oder Sonntag, rückt er auf den nächsten Werktag
+(§ 108 Abs. 3 AO); Feiertage kennt die Rechnung nicht.
+
+**Ob eine Pflicht erfüllt ist, weiß die Buchführung nicht.** Das steht in
+`mandanten/<kürzel>/fristen.csv` – dieselbe Rolle wie `voranmeldungen.csv` bei
+der Umsatzsteuer. Ohne Eintrag gilt eine Pflicht als offen, und das ist die
+richtige Vorgabe: eine vergessene Erklärung fällt so auf, eine erledigte kostet
+eine Zeile.
+
+```
+jahr;art;status;erledigt_am;nachweis;notiz
+2025;koerperschaftsteuer;erledigt;2026-04-03;;Bescheid steht aus
+```
+
+## Belegablage
+
+```bash
+./bh beleg scan beispiel /pfad/zum/ordner --jahr 2025
+./bh beleg add  beispiel rechnung.pdf --datum 2025-03-04 \
+                --aussteller "Bundesanzeiger Verlag GmbH" --betrag 72,95
+./bh beleg list beispiel --jahr 2025
+```
+
+`bh link` stellt die Verbindungen her, und zwar nur deterministisch:
+
+1. `belegfeld` `KA<n>` → Bankumsatz Nr. `n` (so erzeugt `erzeuge_buchungen.py`
+   die laufenden Buchungen),
+2. Bankumsatz → das PDF des Kontoauszugs, aus dem er stammt (IBAN und
+   Auszugsnummer stehen im Dateinamen),
+3. `belege_zuordnung.csv` (`belegfeld;belegnr;notiz`) für alles Übrige –
+   Abschlussbuchungen, Lohn, Wertpapierabrechnungen, Verträge.
+
+## Format der Buchungsdatei
+
+Semikolon-getrennt, deutsche Beträge. Eine Zeile je Buchungszeile;
+Folgezeilen ohne Datum gehören zur vorhergehenden Buchung (Splitbuchung).
+
+```
+datum;text;soll;haben;betrag;beleg;art;ztext
+2025-01-13;IHK Berlin Beitrag 2025;6420;1800;195,58;KA4;;
+2025-12-31;Gehaltsabrechnung 12/2025;6020;3500;8.333,33;LOHN12;;Bruttogehalt
+;;6110;3500;179,39;;;AG-Zuschuss KV/PV
+;;3500;3720;2.517,02;;;Lohnsteuer und SolZ
+```
+
+Zeilen, die mit `#` beginnen, sind Kommentare.
+
+## Vorjahr ohne eigene Buchungen
+
+Für ein Jahr, das beim Steuerberater gebucht wurde, übernimmt
+`bh vorjahr <mandant> <jahr>` die Salden als **eine** Buchung. Es zieht
+
+* die **Bestandskonten** aus der Eröffnungsbilanz des Folgejahres (dieselben
+  Werte, § 252 Abs. 1 Nr. 1 HGB – sie stehen schon in der Datenbank),
+* die **Erfolgskonten** aus `<jahr>/guv_kontennachweis.csv`, abgeschrieben aus
+  dem Kontennachweis des Jahresabschlussberichts.
+
+Den Gewinnvortrag rechnet es dabei auf den Stand *vor* Verwendung zurück. Geht
+die Übernahme nicht auf, bricht sie mit der Differenz ab.
+
+## Private Einkommensteuer
+
+```
+bh --db privat init privat 2025
+bh --db privat import-est privat 2024 <ESt-Erklaerung_2024.pdf>
+bh --db privat report privat 2024 anlagen
+bh --db privat pruefen privat 2025
+bh --db privat abgabe privat 2025
+```
+
+**Doppelte Buchführung, aber keine Bilanzierung.** Gebucht wird wie bei einer
+Kapitalgesellschaft; erfolgswirksam wird nur, was zufließt oder abfließt.
+`bh pruefen` weist jede Buchung zurück, die das verletzt.
+
+**Die Kontonummer sagt, wo der Betrag im Formular landet.** Erfolgskonten
+folgen dem Muster `<4|6><Objekt><Zeile der Anlage V>`:
+
+```
+4115   Objekt 1, Zeile 15   Mieteinnahmen für Wohnungen
+6646   Objekt 6, Zeile 46   Schuldzinsen
+6633   Objekt 6, Zeile 33   AfA           (Buchung ohne Zahlung erlaubt)
+```
+
+Damit ist die Anlage V keine Nebenrechnung, sondern eine Auswertung derselben
+Gliederungsmaschine, die sonst Bilanz und GuV baut.
+
+**Das Vorjahr kommt aus der Erklärung selbst.** `bh import-est` liest den
+Textlayer der ausgefertigten Erklärung, bucht jede Anlage V und den
+Mantelbogen – und prüft sich dabei gegen die Summenzeilen des Formulars
+(Zeile 32, 83, 85 sowie Gesamtbetrag der Einkünfte und zu versteuerndes
+Einkommen). Trifft eine Summe nicht, wird nichts gebucht.
+
+Warum das mehr bringt als eine Einnahmen-Ausgaben-Liste: die Annuität teilt
+sich von selbst in Tilgung (Bestand) und Zins (Werbungskosten), die Aufteilung
+eines Darlehens auf mehrere Objekte fällt als Saldo an statt geschätzt zu
+werden, und der Bankbestand kontrolliert die Vollständigkeit.
+
+### Kontext in der Adresse
+
+Mandant, Jahr und Zeitraum stehen im Adressfragment und wandern an jeden Abruf
+und in jeden Link. Zwei Regeln halten das zusammen: fehlt der Mandant in der
+Adresse, **bleibt der angezeigte stehen** — ein Link ohne Kontext ist kein
+Wechselwunsch —, und nach jedem Seitenaufbau ergänzt `inhaltLinksErgaenzen()`
+den Kontext in allen Links des Inhalts.
+
+**Warum:** Der Router fiel bei fehlendem Mandanten auf `MANDANTEN[0]` zurück.
+Damit sprang jeder Klick auf ein Kontenzeichen oder eine Journalnummer aus dem
+angezeigten Mandanten heraus zum erstbesten der Liste – und zeigte dort ein
+Konto, das es gar nicht gibt.
+
+### Ergebnistreiber
+
+`<jahr>/kennzahlen.json` benennt unter `treiber` die Posten, die das
+Jahresergebnis erklären. Genau ein Eintrag trägt `"rest": true` und **keinen
+Betrag** — seine Zahl ist die Differenz zwischen den benannten Treibern und dem
+Jahresergebnis und wird bei jedem Aufruf gerechnet. Die Übersicht prüft, dass
+die Summe aufgeht.
+
+**Warum:** Am 02.09.2026 verschob eine Korrektur das Ergebnis um 63,45 EUR. Der
+Restposten stand als feste Zahl in der Datei und stimmte sofort nicht mehr; die
+Prüfung „Ergebnistreiber erklären das Jahresergebnis vollständig" schlug an.
+Eine gerechnete Zahl kann nicht veralten.
+
+Der Verweis auf die zugehörige Buchung steht als `beleg` (das Belegfeld) in der
+Datei, nicht als Buchungsnummer. `bh buchen` legt eine geänderte Buchung neu an
+und vergibt dabei eine neue Nummer; ein gepflegter Zahlenverweis zeigte danach
+ins Leere oder, schlimmer, auf eine fremde Buchung. Das Belegfeld überlebt die
+Neuanlage.
+
+## Größenklasse und Offenlegung
+
+`mandant.json` trägt unter `fristen.groessenklasse` `kleinst`, `klein` oder
+`mittel`. Der Eintrag steuert zwei Dinge: die Aufstellungsfrist (§ 264 Abs. 1
+Satz 2 oder 3 HGB) und ob die Fristenliste **Offenlegung** oder
+**Hinterlegung** verlangt. Nur die Kleinstkapitalgesellschaft darf hinterlegen
+(§ 326 Abs. 2 HGB); die hinterlegte Bilanz steht nicht frei im
+Unternehmensregister, sondern wird nur auf Antrag und gegen Gebühr
+herausgegeben.
+
+Der Eintrag ist keine Formalie. Er entscheidet, ob die Zahlen einer Gesellschaft
+frei im Netz stehen. `erzeuge_abschluss.py` baut den Abschluss entsprechend:
+verkürzte Bilanz nach § 266 Abs. 1 Satz 4 HGB, verkürzte GuV nach § 275 Abs. 5
+HGB und statt eines Anhangs die Angaben unter der Bilanz nach § 264 Abs. 1
+Satz 5 HGB. Alles Weitere — Bewertungsmethoden, Anlagenspiegel, Berichtigungen —
+steht in einem **Erläuterungsteil**, der ausdrücklich nicht zum Abschluss gehört
+und nicht offengelegt wird. Die Trennlinie steht im Dokument, damit beim
+Einreichen nicht versehentlich mehr hochgeladen wird als nötig.
+
+## Steuerliche Überleitung
+
+`<jahr>/steuern.json` beschreibt die Überleitung vom Handelsbilanzergebnis zum
+zu versteuernden Einkommen Zeile für Zeile, mit Paragraf und Begründung. Zeilen
+mit `konten` werden gegen die Kontensalden geprüft, `pruefgruppe` fasst mehrere
+Zeilen zusammen, die sich dieselben Konten teilen, `verweis_konten` verlinkt
+ohne zu prüfen. Abweichungen erscheinen in der Oberfläche und in der Prüfliste.
+
+### Platzhalter und die Abgabesperre
+
+Manchmal fehlt eine Unterlage, und trotzdem soll die Rechnung durchlaufen —
+sonst sieht man nicht, was sie bewirkt. Dafür trägt eine Zeile einen
+**Platzhalter**:
+
+```json
+{ "text": "Einkünfte aus nichtselbständiger Arbeit (Ehegatte B)",
+  "betrag": 25000,
+  "platzhalter": {
+    "annahme":         "1.480,00 EUR brutto (12 × 123,33, Monatswert aus dem Vorjahr) …",
+    "grund":           "Die Lohnsteuerbescheinigung 2025 liegt nicht vor.",
+    "aufloesen_durch": "Lohnsteuerbescheinigung 2025 — oder die Bestätigung, …",
+    "gesetzt_am":      "2026-09-03" } }
+```
+
+Das ist keine Anmerkung, sondern eine **Sperre**. Solange ein Platzhalter in der
+Datei steht, gilt die Erklärung als nicht abgabefähig, und zwar mechanisch an
+drei Stellen:
+
+| wo | was passiert |
+|---|---|
+| `bh abgabe <mandant> <jahr>` | nennt jeden Platzhalter mit Annahme, Grund und Auflösung und endet mit **Rückgabewert 1** |
+| `bh pruefen <mandant> <jahr>` | meldet jeden als **Fehler**, nicht als Hinweis — also ebenfalls Rückgabewert 1 |
+| Oberfläche | rote Karte „Abgabe gesperrt“ auf der Steuerseite, Chip *Platzhalter* an der Zeile, Prüfung „Steuerrechnung ohne Platzhalter (abgabefähig)“ auf der Startseite |
+
+Ein Hinweis wäre zu wenig: eine geschätzte Besteuerungsgrundlage in einer
+abgegebenen Erklärung ist keine Kleinigkeit — nach § 150 Abs. 2 AO sind die
+Angaben wahrheitsgemäß nach bestem Wissen und Gewissen zu machen. Aufgelöst
+wird ein Platzhalter, indem der Block aus der Zeile entfernt und der belegte
+Betrag eingesetzt wird; danach sagt `bh abgabe` **FREI**.
+
+Der Vergleich über die Jahre wird **nicht hinterlegt**, sondern aus den
+`steuern.json` der genannten Jahre gezogen:
+`"vergleich": {"aus_jahren": [2024, 2025]}`. Jede Zahl steht damit genau einmal
+in der Ablage, nämlich in dem Jahr, zu dem sie gehört; ein Jahr ohne Datei
+bekommt eine leere Spalte statt einer abgeschriebenen Zahl.
+
+Die Dokumente eines Jahres entstehen aus denselben Daten:
+`<jahr>/erzeuge_abschluss.py` schreibt den Jahresabschluss aus der Datenbank,
+`<jahr>/erzeuge_texte.py` die Steuererklärung aus `steuern.json` und die offenen
+Punkte aus `offene_punkte.json`. Von Hand gepflegt wird keine Zahl.
+
+## Umsatzsteuer
+
+Die Voranmeldung wird **aus der Buchführung abgeleitet**, nicht daneben
+gerechnet. Jede Zahl hat damit dieselbe Herkunft wie die Bilanz, und die
+Oberfläche klappt jede Kennzahl bis zum Beleg auf:
+
+```
+Kennzahl → Buchungszeilen → Buchungssatz → Bankumsatz → Rechnungs-PDF
+```
+
+Woher eine Zeile ihre Kennzahl bekommt: zuerst aus `buchungszeile.ust_schluessel`,
+sonst aus `konto.ustva_kz`. Die Reihenfolge ist wichtig, weil die
+Bemessungsgrundlagen der Eingangsleistungen — Kz 46 (§ 13b Abs. 1) und Kz 84
+(§ 13b Abs. 2) — auf dem Aufwandskonto liegen und sich nicht am Konto festmachen
+lassen. Der Schlüssel `-` macht eine Zeile ausdrücklich neutral; das braucht die
+Umbuchung der Steuerkonten zum Bilanzstichtag, die sonst das vierte Quartal
+wieder aufheben würde.
+
+```bash
+./bh import-qonto  <m> 2026        # Bankumsätze + angehängte Rechnungen
+./bh import-stripe <m> 2026        # Ausgangsrechnungen + Guthabenbewegungen
+python3 mandanten/<m>/erzeuge_buchungen.py 2026
+./bh buchen <m> 2026 mandanten/<m>/2026/buchungen.csv
+./bh ustva  <m> 2026 --quartal 2   # Eingabeblatt für Mein Elster
+```
+
+Drei Dinge, die dabei leicht falsch laufen und deshalb ausdrücklich behandelt
+sind:
+
+* **Die Vorsteuer wird vom Beleg abgelesen, nicht zurückgerechnet.** Mischt eine
+  Rechnung steuerfreie Posten mit steuerpflichtigen — eine Notarrechnung mit
+  Gerichtsauslagen etwa —, ist jede Rückrechnung falsch. `rechnungsust.py` liest
+  den gedruckten Betrag und schweigt, wenn er nicht sicher erkennbar ist.
+* **Elster rechnet die Steuer auf Kz 47 und 85 aus der auf volle Euro
+  abgeschnittenen Bemessungsgrundlage**, gebucht wird je Rechnung auf den Cent.
+  Für die Anmeldung gilt die Elster-Rechnung; die gebuchten Beträge stehen als
+  Probe daneben. Differenzen von wenigen Cent sind richtig, größere ein Fehler.
+* **Bei Stripe bewegt `net` das Guthaben, nicht `amount`.** Die Gebühr behält
+  Stripe gleich ein; der Bruttobetrag der Rechnung wird nie gutgeschrieben. Als
+  Bankumsatz steht deshalb der Nettobetrag, während die Forderung in voller Höhe
+  ausgeglichen wird und die Gebühr als eigene Zeile vom Guthaben abgeht. Stünde
+  brutto im Umsatz, wiche das Sachkonto dauerhaft um die Summe der Gebühren ab.
+* **`vat_amount_cents` aus Qonto ist nur bei den Kontogebühren ein Beleg.** Dort
+  steht die tatsächlich berechnete französische Steuer, und der Reverse Charge
+  bemisst sich am Nettobetrag (Schlüssel `46f`). Bei Kartenumsätzen rät Qonto
+  dagegen 19 % hinein — auch bei Anthropic oder Bright Data, die 0 % berechnen.
+  Ein pauschaler Abzug dieses Feldes würde die Bemessungsgrundlage verkürzen.
+
+`voranmeldungen.csv` hält fest, was tatsächlich übermittelt wurde — Zeitraum,
+Stand, Transferticket, Abgabedatum. Ohne diesen Nachweis lässt sich nicht sagen,
+ob ein Zeitraum erledigt ist.
+
+## Mandanten
+
+Jeder Mandant ist ein Ordner unter `mandanten/` mit einer `mandant.json`.
+Mitgeliefert wird genau einer — `beispiel`, mit erfundenen Zahlen:
+
+```bash
+bh init beispiel 2025
+bh eb    beispiel 2025 mandanten/beispiel/2025/eb.csv
+bh buchen beispiel 2025 mandanten/beispiel/2025/buchungen.csv
+bh report beispiel 2025 bilanz
+bh pruefen beispiel 2025
+```
+
+Drei Kontenrahmen stehen zur Wahl (`kontenrahmen` in der `mandant.json`):
+
+| Rahmen | wofür | Umsatzsteuer |
+|---|---|---|
+| `SKR04-HOLDING` | Beteiligungsholding, Bilanz nach HGB | nein |
+| `SKR04-OPERATIV` | operative Kapitalgesellschaft | ja, mit Reverse Charge |
+| `PRIVAT-ESt` | private Einkommensteuer, Anlage V je Objekt | nein (§ 4 Nr. 12a UStG) |
+
+Beide Gesellschaftsrahmen folgen demselben Nummernkreis, damit
+Vorjahresvergleich und Übergabe an eine Kanzlei ohne Umschlüsselung
+funktionieren; der operative ergänzt die Umsatzsteuer- und Erlöskonten.
+
+**Kontenrahmen beschreiben eine Gattung, keinen Menschen.** Was einen einzelnen
+Mandanten ausmacht — Anschrift, Steuernummer, Bankverbindungen, Mietobjekte,
+abweichende Kontobezeichnungen, eigene Geschäftspartner — steht in seiner
+`mandant.json` und wird beim `bh init` übernommen:
+
+```json
+{
+  "kontenrahmen": "PRIVAT-ESt",
+  "objekte": [
+    { "nr": 1, "name": "Beispielstraße 1", "ort": "10115 Berlin",
+      "angeschafft": "2019-03-01", "afa_satz": 200,
+      "aktenzeichen": "000000000000",
+      "darlehen": [ { "suffix": "10", "bezeichnung": "Musterbank" } ] }
+  ],
+  "kontobezeichnungen": { "1800": "Musterbank Geschäftskonto 1234567" },
+  "kontoauszug_kopfzeilen": ["Musterstraße", "10115 Berlin"],
+  "belegregeln": [["Musterlieferant", "eingangsrechnung", "Musterlieferant GmbH"]]
+}
+```
+
+Jedes Objekt erzeugt seinen eigenen Satz Konten (`0<nr>10` Grund und Boden,
+`6<nr>46` Schuldzinsen …) und eine eigene Anlage V. `suffix` sind die letzten
+beiden Ziffern der Darlehenskontonummer; fehlen sie, wird der Reihe nach 10,
+20, 30 vergeben.
+
+Private Einkommensteuer gehört in eine **eigene Datei** (`bh --db privat …`),
+weil bei einer Betriebsprüfung nach § 147 Abs. 6 AO Datenzugriff auf die
+betrieblichen Daten besteht. `bh serve` zeigt beide nebeneinander.
+
+Die Oberfläche wechselt oben links zwischen Mandant und Geschäftsjahr; beides
+steht im Adressfragment, ein Lesezeichen ist also eindeutig.
