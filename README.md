@@ -116,6 +116,56 @@ die vorkamen.
 > lassen. `bh pruefen` findet Rechen- und Regelfehler, keine falsche
 > rechtliche Würdigung.
 
+## Was herauskommt
+
+Textausgaben, zeilen- und kennzahlengenau nach den amtlichen Vordrucken —
+zum Danebenlegen beim Ausfüllen, nicht zum Übermitteln. Eine ERiC-Anbindung
+gibt es nicht; abgegeben wird in Mein ELSTER von Hand.
+
+**Anlage V, je Objekt eine** (`bh report <m> <jahr> anlagen`) — die
+Zeilennummern sind die des Formulars, mit Vorjahresspalte:
+
+```
+1. Anlage V – Beispielstraße 1 · 10115 Berlin
+  AfA linear 2,00 % · angeschafft 01.03.2019 · Darlehen: Musterbank
+Einnahmen
+  Zeile 15  Mieteinnahmen für Wohnungen (ohne Umlagen)         0,00     6.376,00
+  Zeile 20  Umlagen: laufende Neben- und Betriebskosten        0,00     1.420,00
+Werbungskosten
+  Zeile 33  Absetzung für Abnutzung, linear                1.435,00     1.435,00
+  Zeile 46  Schuldzinsen (ohne Tilgung)                    1.705,65     2.708,00
+  Zeile 56  Erhaltungsaufwand, verteilt nach § 82b EStDV       0,00         0,00
+Zeile 85  Überschuss / Verlust                            -3.140,65     1.314,00
+```
+
+**Umsatzsteuer-Voranmeldung** (`bh ustva <m> <jahr>`) — die amtlichen
+Kennzahlen in der Reihenfolge des Formulars, dazu Frist, Abgabestand und
+Transferticket. Darunter eine **Probe gegen die Buchführung**: was die
+Anmeldung sagt gegen das, was auf den Steuerkonten gebucht ist, mit
+Begründung jeder Abweichung.
+
+```
+ Kz   Bezeichnung                                              Betrag
+ 46   Leistungen eines im übrigen Gemeinschaftsgebiets…            31
+ 47   Steuer auf die Leistungen in Kz 46                        5,89
+ 66   Vorsteuerbeträge aus Rechnungen von anderen Unter…        5,12
+ 83   Verbleibende Umsatzsteuer-Vorauszahlung                  -5,12
+
+ PROBE GEGEN DIE BUCHFÜHRUNG
+   Kz 47   gebucht  6,04   Abweichung 0,15 — Rundung des Abschneidens
+```
+
+Dazu **Zusammenfassende Meldung**, **Bilanz und GuV** nach HGB-Gliederung mit
+Vorjahresvergleich, **Vermögensübersicht und Ermittlung des zu versteuernden
+Einkommens** bei der Einkommensteuer, **Saldenliste, Kontoblatt, Journal**
+und eine **Belegliste**. Jede Auswertung gibt es als Text auf der
+Kommandozeile und in der Weboberfläche, dort mit Drilldown bis zum Beleg.
+
+Die **steuerliche Überleitungsrechnung** steht als `steuern.json` im
+Mandantenordner — Zeile für Zeile im Klartext, jede mit Paragraf und
+Begründung, und jede gegen die Kontensalden geprüft. Was dort nicht gegen die
+Buchführung aufgeht, fällt vor der Abgabe auf statt danach.
+
 ## Leitplanken
 
 Damit die Arbeitsteilung trägt, muss die Anwendung dem Agenten widersprechen
