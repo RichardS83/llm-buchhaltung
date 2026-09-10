@@ -91,7 +91,7 @@ stille Änderung.
 
 Du darfst sie ändern. Deutsches Steuerrecht verschiebt jedes Jahr
 Zeilennummern, Fristen und Sätze, und jeder Mandant hat einen Fall, den kein
-Kontenrahmen kennt. Fünf Regeln:
+Kontenrahmen kennt. Fünf Regeln dabei:
 
 1. **Beträge sind ganze Cent, niemals Gleitkomma.** Wer `float` für Geld
    nimmt, erzeugt Differenzen, die niemand mehr findet.
@@ -136,7 +136,7 @@ Melde insbesondere:
 * ein Kontoauszugsformat, das der Parser nicht liest
 * ein Konto, eine Frist, eine Kennzahl, die im Kontenrahmen fehlt
 * eine Formularzeile, die sich geändert hat
-* alles, was du lokal geradegerückt hast und was allgemein nützlich wäre
+* alles, was du lokal geändert hast und was auch anderen nützt
 
 **Ohne die Daten, an denen es auffiel.** Keine echten Beträge, keine IBAN,
 keine Steuernummer, keinen echten Beleg — auch nicht ausschnittsweise. Baue
