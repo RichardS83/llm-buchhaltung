@@ -16,20 +16,20 @@ Mit „der Agent" ist eine Coding-CLI gemeint, die auf dem Rechner läuft und
 Dateien und Shell bedienen darf — **Claude Code**, **OpenAI Codex**, **Gemini
 CLI**, Cursor und was sonst diese Form hat. Die Anwendung ist ein
 Kommandozeilenwerkzeug mit Textausgabe und einer SQLite-Datei; das ist genau
-die Form, mit der solche Agenten gut zurechtkommen. Wie sie zu bedienen ist,
-steht in [`AGENTS.md`](AGENTS.md) — Claude Code findet den Weg dorthin über
-[`CLAUDE.md`](CLAUDE.md).
+die Oberfläche, mit der solche Agenten gut umgehen. Ihre Betriebsanleitung
+steht in [`AGENTS.md`](AGENTS.md) (Claude Code findet sie über
+[`CLAUDE.md`](CLAUDE.md)).
 
 Der Mensch kommt einmal vor, am Ende, und das ist Absicht: Wer jeden
 Buchungssatz selbst prüft, hat nichts gewonnen. Verlässlich ist die
 Arbeitsteilung nicht, weil ein Mensch mitliest, sondern weil die Anwendung
 deterministisch widerspricht.
 
-Die Anwendung ist kein fertiges Produkt, sondern eine Arbeitsgrundlage.
-Deutsches Steuerrecht verschiebt jedes Jahr Zeilennummern, Fristen und Sätze,
-und jeder Mandant hat einen Fall, den der Kontenrahmen nicht kennt. Der Agent
-darf beides lokal in Ordnung bringen — und soll melden, was er geändert hat,
-damit es beim nächsten nicht wieder fehlt.
+Die Anwendung ist kein fertiges Produkt, sondern die Unterlage, auf der ein
+Agent arbeitet. Deutsches Steuerrecht ändert Zeilennummern, Fristen und Sätze
+jedes Jahr, und jeder Mandant hat einen Fall, den der Kontenrahmen nicht kennt.
+Der Agent darf beides lokal geraderücken — und soll melden, was er geradegerückt
+hat, damit es beim nächsten nicht wieder fehlt.
 
 Der Agent arbeitet, die Anwendung widerspricht, der Mensch entscheidet. Die
 Prüfzeile ist der Grund, warum die anderen zusammen funktionieren:
@@ -81,7 +81,7 @@ Formularzeile, die sich verschoben hat; ein Auszugsformat, das der Parser
 nicht liest. Zu mehreren findet man das schneller als allein, und jede
 Korrektur nützt auch allen anderen. Deshalb steht in
 [`AGENTS.md`](AGENTS.md) ausdrücklich, dass ein Agent melden soll, was er
-lokal geändert hat.
+lokal geradegerückt hat.
 
 Was das Projekt **nicht** ist: eine Kanzleisoftware, ein DATEV-Ersatz oder
 etwas, das jeden Fall des deutschen Steuerrechts kennt. Es kennt die Fälle,
@@ -116,20 +116,20 @@ die vorkamen.
 > lassen. `bh pruefen` findet Rechen- und Regelfehler, keine falsche
 > rechtliche Würdigung.
 
-## Was die Anwendung dagegenhält
+## Leitplanken
 
 Damit die Arbeitsteilung trägt, muss die Anwendung dem Agenten widersprechen
-können. Vier Dinge tun das:
+können. Vier Mechanismen tun das:
 
 * **Regelprüfungen** (`bh pruefen`): Soll gleich Haben, Bankbestand gegen
   Kontoauszug, Zehn-Tage-Regel, § 11 EStG bei der Überschussrechnung.
 * **Platzhalter mit Auflösungsbedingung**: eine geschätzte Zahl trägt, warum
   sie geschätzt ist, worauf sie beruht und welcher Beleg sie ablösen würde.
 * **Abgabesperre** (`bh abgabe`): solange ein Platzhalter offen ist, sagt die
-  Anwendung nein. Nicht als Warnung, sondern als Rückgabewert.
-* **Jede Zahl lässt sich aufklappen**: von der Summe im Bericht über die
-  Einzelbuchung bis zum Beleg. Was sich nicht bis zum Papier zurückverfolgen
-  lässt, ist keine Grundlage für eine Unterschrift.
+  Anwendung nein. Nicht als Warnung – als Rückgabewert.
+* **Drilldown**: jede Zahl jeder Auswertung klappt bis zur Einzelbuchung und
+  zum Beleg auf. Was sich nicht bis zum Papier zurückverfolgen lässt, ist
+  keine Grundlage für eine Unterschrift.
 
 ## Loslegen
 
