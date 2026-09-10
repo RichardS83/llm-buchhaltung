@@ -2,9 +2,15 @@
 
 Fassung 1.0, gültig ab dem 10. September 2026
 
-Diese Vereinbarung regelt die Rechte an Beiträgen zum Projekt **bh –
-Buchhaltung**. Sie gilt zwischen dir („Beitragender") und RichardS83
+Diese Vereinbarung regelt die Rechte an Beiträgen zum Projekt
+**llm-buchhaltung**. Sie gilt zwischen dir („Beitragender") und dem Inhaber
+des GitHub-Kontos [RichardS83](https://github.com/RichardS83)
 („Projektinhaber"). Mit dem Einreichen eines Beitrags stimmst du ihr zu.
+
+Der Projektinhaber tritt unter diesem Konto auf. Wer die Vereinbarung
+schließen oder Ansprüche daraus geltend machen möchte, kann seine
+bürgerlichen Namen und eine ladungsfähige Anschrift über ein Issue im Projekt
+anfordern; sie werden dann mitgeteilt.
 
 ## 1. Was ein Beitrag ist
 
