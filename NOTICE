@@ -1,0 +1,40 @@
+bh – Buchhaltung
+Copyright (C) 2025–2026 RichardS83
+
+Dieses Programm ist freie Software: Sie können es unter den Bedingungen der
+GNU Affero General Public License, Version 3, weitergeben und/oder ändern.
+Der vollständige Lizenztext steht in der Datei LICENSE.
+
+Dieses Programm wird in der Hoffnung verteilt, dass es nützlich ist, aber
+OHNE JEDE GEWÄHRLEISTUNG — insbesondere ohne die Gewährleistung der
+Marktgängigkeit oder der Eignung für einen bestimmten Zweck.
+
+------------------------------------------------------------------------------
+Kein Steuerrat
+
+Diese Software rechnet, sie berät nicht. Sie ersetzt weder Steuerberater noch
+Wirtschaftsprüfer. Für Richtigkeit und Vollständigkeit der damit erstellten
+Bücher, Abschlüsse und Erklärungen haftet allein, wer sie beim Finanzamt
+einreicht. Prüfen Sie jedes Ergebnis, bevor Sie es abgeben.
+
+------------------------------------------------------------------------------
+Kommerzielle Lizenz
+
+Wer die Software einsetzen möchte, ohne den Pflichten der AGPL-3.0 zu
+unterliegen — insbesondere ohne den eigenen geänderten Quelltext nach § 13
+AGPL offenlegen zu müssen —, kann eine gesonderte kommerzielle Lizenz
+erwerben. Anfragen an den Urheber.
+
+------------------------------------------------------------------------------
+Marken
+
+„bh" und „bh – Buchhaltung" als Bezeichnung dieses Projekts sind von der
+AGPL-3.0 nicht erfasst. Abgeleitete Werke dürfen den Quelltext unter den
+Bedingungen der Lizenz verwenden, aber nicht den Projektnamen führen.
+
+------------------------------------------------------------------------------
+Fremde Bestandteile
+
+Keine. Die Anwendung kommt mit der Python-Standardbibliothek aus. Zum Lesen
+von PDF-Belegen ruft sie `pdftotext` aus dem Poppler-Projekt auf, das getrennt
+installiert wird und unter der GPL-2.0 steht.

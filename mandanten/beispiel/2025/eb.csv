@@ -1,0 +1,6 @@
+datum;text;soll;haben;betrag;beleg;art;ztext
+# Eröffnungsbilanzwerte 01.01.2025 laut Jahresabschluss zum 31.12.2024.
+# Erfundene Zahlen — dieser Mandant existiert nicht.
+2025-01-01;Saldenvortrag Aktiva;1800;9000;25.000,00;JA2024;eb;Geschäftskonto
+2025-01-01;Saldenvortrag Passiva;9000;2900;1.000,00;JA2024;eb;Gezeichnetes Kapital
+2025-01-01;Saldenvortrag Passiva;9000;2970;24.000,00;JA2024;eb;Gewinnvortrag
