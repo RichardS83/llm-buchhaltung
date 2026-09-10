@@ -58,6 +58,49 @@ Zwei Betriebsarten, dieselbe Mechanik:
 Buchen, Belegarchiv, Bankimport, Auswertungsmaschine und Oberfläche sind
 identisch – der Unterschied steckt im Kontenrahmen und in einer Prüfung.
 
+## Einrichten ohne Entwicklerkenntnisse
+
+Du musst diese Anwendung nicht selbst installieren, und du brauchst dafür kein
+Terminal. Das erledigt der Agent: klonen, Fehlendes nachinstallieren, Mandant
+anlegen, Selbsttest laufen lassen. Drei Schritte.
+
+**1. Claude Code installieren** — <https://claude.com/claude-code>. Es gibt eine
+App für Mac und Windows; die Kommandozeile ist nicht nötig. Für OpenAI Codex
+oder Gemini CLI gilt dasselbe, nur die Installation sieht anders aus. Der
+Zugang ist kostenpflichtig, das ist die einzige laufende Ausgabe.
+
+**2. Einen leeren Ordner anlegen** — etwa `Buchhaltung` im Benutzerordner — und
+den Agenten darin starten. In diesem Ordner darf er arbeiten, sonst nirgends.
+
+**3. Diesen Satz hineinkopieren:**
+
+```text
+Installiere llm-buchhaltung aus https://github.com/RichardS83/llm-buchhaltung
+in diesen Ordner. Lies README.md und AGENTS.md, prüfe die Voraussetzungen und
+installiere nach, was fehlt. Lass danach den Selbsttest laufen und rechne den
+Beispielmandanten durch. Berichte mir, was nicht geklappt hat.
+```
+
+Ab hier arbeitet der Agent. Er prüft, ob Python 3.11 vorhanden ist, holt
+`pdftotext` nach, klont das Projekt und lässt den Selbsttest laufen. Fehlt etwas,
+das er nicht selbst beschaffen kann, sagt er es, statt weiterzumachen.
+
+Wenn das steht, richtest du deinen eigenen Mandanten ein — auch das im Gespräch:
+
+```text
+Lege einen Mandanten für meine GmbH an. Frag mich nach allem, was du brauchst.
+```
+
+**Was du selbst beisteuern musst**, weil es niemand erraten kann: Rechtsform und
+Firmenname, Finanzamt und Steuernummer, deine Kontoauszüge als PDF oder CSV und
+die Belege. Der Agent fragt danach, einzeln, und sagt jeweils wofür.
+
+**Was dir niemand abnimmt:** Am Ende steht deine Unterschrift unter der
+Erklärung. Die Anwendung rechnet und widerspricht, sie berät nicht — lies dazu
+[Lizenz und Haftung](#lizenz-und-haftung), bevor du damit ernst machst. Wenn dein
+Fall über eine überschaubare GmbH, UG oder Vermietung hinausgeht, gehört ein
+Steuerberater dazu.
+
 ## Woher das kommt
 
 Das hier ist kein Produkt, sondern Werkzeug aus dem eigenen Gebrauch. Gebaut
@@ -181,9 +224,9 @@ können. Vier Mechanismen tun das:
   zum Beleg auf. Was sich nicht bis zum Papier zurückverfolgen lässt, ist
   keine Grundlage für eine Unterschrift.
 
-## Loslegen
+## Loslegen von Hand
 
-Voraussetzung ist Python 3.11 oder neuer. Für den Belegimport zusätzlich
+Wer selbst zur Tastatur greift: Voraussetzung ist Python 3.11 oder neuer. Für den Belegimport zusätzlich
 `pdftotext` (in Poppler enthalten: `brew install poppler`, `apt install
 poppler-utils`). Sonst nichts – keine Pakete, keine Datenbank, kein Dienst.
 
