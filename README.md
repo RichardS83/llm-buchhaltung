@@ -53,17 +53,71 @@ bestätigt.
 Technisch: Python-Standardbibliothek, SQLite, keine Abhängigkeiten außer
 `pdftotext` (Poppler) für den Belegimport.
 
-Zwei Betriebsarten, dieselbe Mechanik:
+Zwei Betriebsarten, dieselbe Mechanik. Buchen, Belegarchiv, Bankimport,
+Auswertungsmaschine und Oberfläche sind identisch – der Unterschied steckt im
+Kontenrahmen und in einer Prüfung. Getrennt sind die Datenbanken:
+`buchhaltung.sqlite` für die Gesellschaften, `privat.sqlite` für die private
+Erklärung (`bh --db privat`), weil bei einer Betriebsprüfung nach § 147 Abs. 6
+AO Datenzugriff auf die betrieblichen Daten besteht.
 
-| | Kapitalgesellschaft | private Einkommensteuer |
+## Was die Anwendung kann
+
+| | GmbH / UG (SKR04) | private Einkommensteuer |
 |---|---|---|
-| Periodisierung | Realisationsprinzip (HGB) | Zufluss/Abfluss (§ 11 EStG) |
-| Rechenwerke | Bilanz, GuV | Vermögensübersicht, Ermittlung des zu versteuernden Einkommens |
-| Formulare | Jahresabschluss, KSt/GewSt, UStVA | Anlage V je Objekt, Anlage N, KAP, S |
-| Datenbank | `buchhaltung.sqlite` | `privat.sqlite` (`bh --db privat`) |
+| **Buchführung** | doppelt, HGB, Realisationsprinzip | doppelt, Zufluss/Abfluss § 11 EStG inkl. Zehn-Tage-Regel |
+| **Rechenwerke** | Bilanz nach § 266 HGB, GuV, je mit Vorjahresspalte | Vermögensübersicht, Ermittlung des zu versteuernden Einkommens |
+| **Formulare** | Überleitung Handels- → Steuerbilanz, Kennzahlen für **KSt** und **GewSt** | **Anlage V je Objekt, zeilengenau nach Vordruck** (AfA linear, § 82b EStDV) |
+| **weitere Einkunftsarten** | — | Anlage N, S, KAP als Kontengruppen, die in die Einkünfte einfließen — keine zeilengenaue Formularausgabe |
+| **Umsatzsteuer** | **UStVA** monatlich oder vierteljährlich, ELSTER-Kennzahlen, § 13b, Dauerfristverlängerung (§ 46 UStDV) | — |
+| **Fristen** | KSt, GewSt, USt-Jahreserklärung, **Zusammenfassende Meldung**, E-Bilanz, Offenlegung; Größenklasse klein / kleinst (§ 267a HGB) | Einkommensteuererklärung nach § 149 AO, verlängert nach § 109 AO |
+| **Vorjahr** | Salden aus dem Jahresabschlussbericht als eine belegte Buchung | Import einer ausgefertigten ESt-Erklärung (DATEV-PDF) |
 
-Buchen, Belegarchiv, Bankimport, Auswertungsmaschine und Oberfläche sind
-identisch – der Unterschied steckt im Kontenrahmen und in einer Prüfung.
+Für beide Betriebsarten gleich:
+
+| | |
+|---|---|
+| **Auswertungen** | Summen- und Saldenliste, Journal, Kontoblatt mit laufendem Saldo, Belegliste |
+| **Prüfungen** | Soll gleich Haben, Aktiva gleich Passiva, Bankbestand gegen Kontoauszug, Buchungen ohne Gegenkonto, Periodenabgrenzung am Jahreswechsel, § 11 EStG |
+| **Abgabesperre** | eine geschätzte Zahl trägt Annahme, Grund und den Beleg, der sie ablöst — solange einer offen ist, sagt `bh abgabe` nein, mit Rückgabewert 1 |
+| **Überleitung geprüft** | jede Zeile der Steuererklärung, die auf Konten verweist, wird gegen die Salden gehalten; Abweichungen sperren die Abgabe |
+| **Belegarchiv** | jeder Beleg einmal kopiert, fortlaufende Nummer, Verknüpfung Buchung ↔ Bankumsatz ↔ Beleg |
+| **Abgeben ≠ zahlen** | beides sind eigene Termine. Ein übermittelter, aber unbezahlter Zeitraum sieht sonst erledigt aus — genau dort entstehen Säumniszuschläge (§ 240 AO) |
+| **Oberfläche** | zwölf Seiten im Browser, lokal und lesend; jede Zahl klappt bis zur Einzelbuchung und zum Beleg-PDF auf |
+
+### Integrationen
+
+| | was hereinkommt |
+|---|---|
+| **Qonto** (REST) | Bankumsätze samt Roh-JSON und die in Qonto angehängten Rechnungen als Belege |
+| **Stripe** (REST) | Ausgangsrechnungen und Bewegungen auf dem Guthaben — Gebühren getrennt vom Umsatz |
+| **Commerzbank** | Kontoauszugs-PDF in drei Vordruckgenerationen, dazu der CSV-Export |
+| **DATEV** | ausgefertigte Einkommensteuererklärung als PDF, für das Vergleichsjahr |
+| **Belegordner** | `bh beleg scan` liest einen Ordner ein, `pdftotext` erschließt den Inhalt |
+| **Schlüsselbund** | Zugangsdaten liegen im Schlüsselbund von macOS, ersatzweise in der Umgebung — nie im Quelltext |
+
+### Noch nicht drin
+
+Ehrlich gesagt, damit niemand danach sucht:
+
+| | Stand |
+|---|---|
+| **Umsatzsteuer-Jahreserklärung** | **fehlt — in Arbeit.** Die Voranmeldungen gibt es, und die Frist für die Jahreserklärung wird überwacht; der Zeitraum kennt aber nur Monat und Quartal, kein volles Jahr. Das Formular ist noch nicht gebaut. |
+| **Elektronische Übermittlung (ERiC)** | nicht vorgesehen. Die Anwendung erzeugt Zahlen zum Eintragen; abgegeben wird in Mein ELSTER von Hand. |
+| **E-Bilanz** | Datensatz fehlt. Die Frist nach § 5b EStG wird überwacht, erzeugt wird die Übermittlungsdatei nicht. |
+| **weitere Banken** | bisher nur Commerzbank als PDF; alles andere über Qonto, Stripe oder CSV. |
+
+### Was fehlt, baust du dir
+
+Das ist keine Ausrede, sondern die Bauart. Ein fehlender Kontenrahmen, ein
+unbekanntes Auszugsformat, eine geänderte Zeilennummer — **der Agent ändert die
+Anwendung lokal und schreibt den Test dazu**, siehe [Die Anwendung
+anpassen](AGENTS.md#die-anwendung-anpassen). Deutsches Steuerrecht ändert jedes
+Jahr etwas, und jeder Mandant hat einen Fall, den der Kontenrahmen nicht kennt.
+
+**Und dann schick es hierher.** Was bei dir gefehlt hat, fehlt beim nächsten
+auch. Ein Issue reicht, ein Pull Request ist besser — wie, steht in
+[CONTRIBUTING.md](CONTRIBUTING.md). Nur bitte ohne die echten Zahlen, an denen
+es dir aufgefallen ist.
 
 ## Einrichten ohne Entwicklerkenntnisse
 
