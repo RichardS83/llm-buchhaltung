@@ -8,9 +8,9 @@ des GitHub-Kontos [RichardS83](https://github.com/RichardS83)
 („Projektinhaber"). Mit dem Einreichen eines Beitrags stimmst du ihr zu.
 
 Der Projektinhaber tritt unter diesem Konto auf. Wer die Vereinbarung
-schließen oder Ansprüche daraus geltend machen möchte, kann seine
+schließen oder Ansprüche daraus geltend machen möchte, kann seinen
 bürgerlichen Namen und eine ladungsfähige Anschrift über ein Issue im Projekt
-anfordern; sie werden dann mitgeteilt.
+anfordern; beides wird dann mitgeteilt.
 
 ## 1. Was ein Beitrag ist
 
