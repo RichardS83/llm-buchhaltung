@@ -197,7 +197,7 @@ cd llm-buchhaltung
 ./bh report  beispiel 2025 bilanz
 ./bh pruefen beispiel 2025
 ./bh abgabe  beispiel 2025          # "FREI — die Erklärung kann abgegeben werden"
-./bh serve   beispiel 2025          # Oberfläche auf http://127.0.0.1:8080
+./bh serve   beispiel 2025          # Oberfläche auf http://127.0.0.1:8765
 
 python3 -m unittest discover -s tests -q    # Selbsttest
 ```

@@ -54,7 +54,7 @@ betrieblichen Daten besteht.
 ./bh buchen      <m> <jahr> mandanten/<m>/<jahr>/buchungen.csv
 ./bh link        <m> <jahr>                            # Buchung <-> Umsatz <-> Beleg
 ./bh pruefen     <m> <jahr>
-./bh report      <m> <jahr> bilanz|guv|saldenliste|journal|belege
+./bh report      <m> <jahr> bilanz|guv|saldenliste|journal|belege|anlagen
 ./bh abgabe      <m> <jahr>                            # darf abgegeben werden?
 ```
 
