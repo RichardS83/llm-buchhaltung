@@ -27,6 +27,11 @@ jede Zahl bis zur Einzelbuchung und zum Beleg auf. Das ist die Ansicht, in der
 freigegeben wird; der Agent soll sie am Ende seiner Arbeit starten und den Link
 nennen.
 
+![Anlage V mit aufgeklappter Zeile: Zeile 46 Schuldzinsen führt auf Konto 6146 und von dort auf die einzelne Buchung mit Datum, Gegenkonto und Beleg](docs/bilder/anlage-v.jpg)
+
+*Anlage V des Beispielmandanten. Die Zeilennummern sind die des amtlichen
+Vordrucks; Zeile 46 ist aufgeklappt bis zur Buchung, aus der sie besteht.*
+
 Der Mensch kommt einmal vor, am Ende, und das ist Absicht: Wer jeden
 Buchungssatz selbst prüft, hat nichts gewonnen. Verlässlich ist die
 Arbeitsteilung nicht, weil ein Mensch mitliest, sondern weil die Anwendung
@@ -486,6 +491,16 @@ gestartet, sondern nur der Link ausgegeben; sonst wird einer im Hintergrund
 gestartet und gewartet, bis er antwortet. Kommt er nicht hoch, ist der
 Rückgabewert 1 und es gibt keinen Link — ein Link auf einen toten Server ist
 schlimmer als keiner.
+
+![Übersicht einer UG: Kacheln mit Bilanzsumme, Jahresüberschuss, Eigenkapital und liquiden Mitteln, darunter eine Tabelle der Fristen mit Überfälligkeitsmarkierung](docs/bilder/uebersicht.jpg)
+
+*Die Übersicht: Kennzahlen zum Stichtag, darunter die Fristen — aus Stichtag
+und Paragraf gerechnet, nicht hinterlegt.*
+
+![Einkommensteuererklärung mit rot umrandetem Kasten „Abgabe gesperrt — 1 Platzhalter" und der Zeile, die den angenommenen Wert trägt](docs/bilder/abgabesperre.jpg)
+
+*Die Abgabesperre. Eine angenommene Zahl trägt, worauf sie beruht und welcher
+Beleg sie ablöst — und sperrt die Abgabe, bis er da ist.*
 
 **Jede Zahl lässt sich aufklappen.** Das ist der tragende Grundsatz der
 Oberfläche und gilt für jede Seite, nicht nur für einzelne:
