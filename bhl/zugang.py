@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Zugangsdaten für die Schnittstellen von Qonto und Stripe.
 
 Gelesen wird aus dem Schlüsselbund von macOS, ersatzweise aus der Umgebung.

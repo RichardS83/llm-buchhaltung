@@ -191,15 +191,45 @@ poppler-utils`). Sonst nichts – keine Pakete, keine Datenbank, kein Dienst.
 git clone https://github.com/RichardS83/llm-buchhaltung.git
 cd llm-buchhaltung
 
-./bh init   beispiel 2025
-./bh eb     beispiel 2025 mandanten/beispiel/2025/eb.csv
-./bh buchen beispiel 2025 mandanten/beispiel/2025/buchungen.csv
-./bh report beispiel 2025 bilanz
+./bh init    beispiel 2025
+./bh eb      beispiel 2025 mandanten/beispiel/2025/eb.csv
+./bh buchen  beispiel 2025 mandanten/beispiel/2025/buchungen.csv
+./bh report  beispiel 2025 bilanz
 ./bh pruefen beispiel 2025
-./bh serve  beispiel 2025          # Oberfläche auf http://127.0.0.1:8080
+./bh abgabe  beispiel 2025          # "FREI — die Erklärung kann abgegeben werden"
+./bh serve   beispiel 2025          # Oberfläche auf http://127.0.0.1:8080
 
 python3 -m unittest discover -s tests -q    # Selbsttest
 ```
+
+Zwei Beispielmandanten liegen bei, beide mit erfundenen Zahlen:
+
+| Kürzel | was | zeigt |
+|---|---|---|
+| `beispiel` | Beteiligungsholding, SKR04-HOLDING | Bilanz, GuV, steuerliche Überleitung — geht sauber durch |
+| `beispiel-privat` | Zusammenveranlagung, PRIVAT-ESt | Anlage V, Überschussrechnung nach § 11 EStG, **und die Abgabesperre** |
+
+Der private trägt absichtlich einen offenen Platzhalter. So sieht man, was
+passiert, wenn eine Zahl angenommen und nicht belegt ist:
+
+```bash
+./bh --db privat init    beispiel-privat 2025
+./bh --db privat eb      beispiel-privat 2025 mandanten/beispiel-privat/2025/eb.csv
+./bh --db privat buchen  beispiel-privat 2025 mandanten/beispiel-privat/2025/buchungen.csv
+./bh --db privat report  beispiel-privat 2025 anlagen
+./bh --db privat abgabe  beispiel-privat 2025
+```
+
+```
+  PLATZHALTER  + Einkünfte aus nichtselbständiger Arbeit (Person A)  48.000,00 EUR
+               angenommen:      48.000,00 EUR brutto, fortgeschrieben aus dem Vorjahr
+               Grund:           Die Lohnsteuerbescheinigung 2025 liegt noch nicht vor.
+               aufzulösen durch: Lohnsteuerbescheinigung 2025
+
+GESPERRT — 1 Platzhalter. Die Erklärung ist nicht abgabefähig.
+```
+
+Rückgabewert 1 — ein Skript oder ein Agent kann daran hängen.
 
 ## Lizenz und Haftung
 
@@ -692,15 +722,8 @@ ob ein Zeitraum erledigt ist.
 ## Mandanten
 
 Jeder Mandant ist ein Ordner unter `mandanten/` mit einer `mandant.json`.
-Mitgeliefert wird genau einer — `beispiel`, mit erfundenen Zahlen:
-
-```bash
-bh init beispiel 2025
-bh eb    beispiel 2025 mandanten/beispiel/2025/eb.csv
-bh buchen beispiel 2025 mandanten/beispiel/2025/buchungen.csv
-bh report beispiel 2025 bilanz
-bh pruefen beispiel 2025
-```
+Mitgeliefert werden zwei mit erfundenen Zahlen, `beispiel` und
+`beispiel-privat` — siehe [Loslegen](#loslegen).
 
 Drei Kontenrahmen stehen zur Wahl (`kontenrahmen` in der `mandant.json`):
 

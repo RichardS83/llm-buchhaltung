@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Verknuepfungen herstellen: Buchung <-> Bankumsatz <-> Beleg.
 
 Ohne diese Kanten endet jede Auswertung beim Buchungssatz. Erst sie machen den

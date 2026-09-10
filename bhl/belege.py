@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Belegablage.
 
 Grundgedanke: Jeder Beleg wird einmal ins Archiv kopiert (Original bleibt, wo es

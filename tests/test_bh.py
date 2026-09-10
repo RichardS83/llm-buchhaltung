@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 # -*- coding: utf-8 -*-
 """Selbsttest ohne fremde Pakete: python3 -m unittest discover -s tests
 
@@ -145,6 +147,96 @@ class Durchlauf(unittest.TestCase):
             " FROM buchungszeile").fetchone()
         con.close()
         self.assertEqual(soll, haben, "Summe Soll ungleich Summe Haben")
+
+
+class Einkommensteuer(unittest.TestCase):
+    """Der private Beispielmandant: Ueberschussrechnung und Anlage V."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.dbp = os.path.join(self.tmp, "privat.sqlite")
+
+    def bh(self, *args, erwartet=0):
+        r = subprocess.run([sys.executable, os.path.join(WURZEL, "bh"), "--db", self.dbp, *args],
+                           capture_output=True, text=True, cwd=WURZEL)
+        self.assertEqual(r.returncode, erwartet,
+                         f"bh {' '.join(args)}\n{r.stdout}\n{r.stderr}")
+        return r.stdout
+
+    def buchen(self):
+        d = "mandanten/beispiel-privat/2025"
+        self.bh("init", "beispiel-privat", "2025")
+        self.bh("eb", "beispiel-privat", "2025", f"{d}/eb.csv")
+        self.bh("buchen", "beispiel-privat", "2025", f"{d}/buchungen.csv")
+
+    def test_beanstandet_nur_den_platzhalter(self):
+        """Der Beispielmandant traegt absichtlich einen offenen Platzhalter -
+        er ist da, um die Abgabesperre zu zeigen. Sonst muss alles sauber
+        sein: die Buchfuehrung selbst darf nichts zu meckern geben."""
+        self.buchen()
+        aus = self.bh("pruefen", "beispiel-privat", "2025", erwartet=1)
+        self.assertIn("Platzhalter", aus)
+        self.assertIn("1 Fehler", aus)
+
+    def test_afa_loest_keine_zehn_tage_warnung_aus(self):
+        """§ 11 Abs. 1 S. 2 EStG setzt einen Zu- oder Abfluss voraus. Die AfA
+        steht immer zum 31.12. und ist keine Zahlung - sie darf die Regel
+        nicht ausloesen, sonst warnt jede Buchfuehrung jedes Jahr grundlos."""
+        self.buchen()
+        aus = self.bh("pruefen", "beispiel-privat", "2025", erwartet=1)
+        self.assertNotIn("Zehn-Tage", aus)
+        self.assertIn("0 Hinweise", aus)
+
+    def test_anlage_v_traegt_die_zeilen_des_vordrucks(self):
+        self.buchen()
+        a = self.bh("report", "beispiel-privat", "2025", "anlagen")
+        for zeile in ("Zeile 15", "Zeile 33", "Zeile 46", "Zeile 55",
+                      "Zeile 83", "Zeile 85"):
+            self.assertIn(zeile, a, f"{zeile} fehlt in der Anlage V")
+        self.assertIn("Anlage V", a)
+
+    def test_vermoegensuebersicht_geht_auf(self):
+        self.buchen()
+        b = self.bh("report", "beispiel-privat", "2025", "bilanz")
+        a = [z for z in b.splitlines() if z.startswith("Summe Aktiva")][0]
+        p = [z for z in b.splitlines() if z.startswith("Summe Passiva")][0]
+        self.assertEqual(a.split()[-1], p.split()[-1])
+
+
+class Abgabesperre(unittest.TestCase):
+    """`bh abgabe` muss nein sagen koennen - sonst traegt die Arbeitsteilung nicht."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def vorbereiten(self, mandant):
+        dbp = os.path.join(self.tmp, f"{mandant}.sqlite")
+        d = f"mandanten/{mandant}/2025"
+        for args in (("init", mandant, "2025"),
+                     ("eb", mandant, "2025", f"{d}/eb.csv"),
+                     ("buchen", mandant, "2025", f"{d}/buchungen.csv")):
+            subprocess.run([sys.executable, os.path.join(WURZEL, "bh"), "--db", dbp, *args],
+                           capture_output=True, text=True, cwd=WURZEL, check=True)
+        return dbp
+
+    def abgabe(self, mandant):
+        dbp = self.vorbereiten(mandant)
+        return subprocess.run([sys.executable, os.path.join(WURZEL, "bh"), "--db", dbp,
+                               "abgabe", mandant, "2025"],
+                              capture_output=True, text=True, cwd=WURZEL)
+
+    def test_platzhalter_sperrt_mit_rueckgabewert(self):
+        r = self.abgabe("beispiel-privat")
+        self.assertEqual(r.returncode, 1, "Ein offener Platzhalter muss sperren")
+        self.assertIn("GESPERRT", r.stdout)
+        self.assertIn("PLATZHALTER", r.stdout)
+        # Der Platzhalter muss sagen, was ihn aufloest - sonst ist er nutzlos.
+        self.assertIn("aufzulösen durch", r.stdout)
+
+    def test_ohne_platzhalter_frei(self):
+        r = self.abgabe("beispiel")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FREI", r.stdout)
 
 
 class KeineEchtdaten(unittest.TestCase):

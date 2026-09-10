@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Regelpruefungen auf der Buchfuehrung.
 
 Die Buchfuehrung traegt ihre eigenen Kontrollen: Soll gleich Haben, Aktiva
@@ -109,6 +111,12 @@ def jahreswechsel(con: sqlite3.Connection, gj_id: int, rahmen: Rahmen) -> list[d
     Automatisch entscheiden laesst sich das nicht: ob eine Zahlung
     "regelmaessig wiederkehrend" ist, steht in keiner Buchung. Gemeldet wird
     deshalb als Hinweis, nicht als Fehler - jemand muss draufschauen.
+
+    Ausgenommen sind Buchungen auf Konten mit dem Kennzeichen `ohne_zahlung`
+    (AfA nach § 7 EStG, verteilter Erhaltungsaufwand nach § 82b EStDV). Die
+    Regel setzt einen Zu- oder Abfluss voraus; wo nichts fliesst, kann auch
+    nichts im falschen Jahr fliessen. Die AfA steht immer zum 31.12. und
+    haette sonst in jedem Jahr einen Hinweis erzeugt, der nie zutrifft.
     """
     if not rahmen.ueberschussrechnung:
         return []
@@ -126,8 +134,10 @@ def jahreswechsel(con: sqlite3.Connection, gj_id: int, rahmen: Rahmen) -> list[d
                 FROM buchung b JOIN buchungszeile z ON z.buchung_id=b.id
                 JOIN konto k ON k.id=z.konto_id
                 WHERE b.gj_id=? AND b.art='lfd' AND b.datum BETWEEN ? AND ?
-                  AND k.typ IN ('E','X') GROUP BY b.id ORDER BY b.datum""",
-                (gj_id, von, bis)):
+                  AND k.typ IN ('E','X') AND k.nummer NOT IN (%s)
+                GROUP BY b.id ORDER BY b.datum""" % (
+                    ",".join("?" * len(rahmen.ohne_zahlung)) or "''"),
+                (gj_id, von, bis, *sorted(rahmen.ohne_zahlung))):
             befunde.append(_befund(
                 "zehn_tage", "hinweis",
                 f"Buchung {r['nummer']} ({r['datum']}): liegt im Zehn-Tage-Fenster um den "

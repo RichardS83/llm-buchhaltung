@@ -1,4 +1,4 @@
-bh – Buchhaltung
+llm-buchhaltung
 Copyright (C) 2025–2026 RichardS83
 
 Dieses Programm ist freie Software: Sie können es unter den Bedingungen der
@@ -33,6 +33,16 @@ geltenden Vordrucke und lassen Sie das Ergebnis vor jeder Abgabe von einem
 Steuerberater durchsehen.
 
 ------------------------------------------------------------------------------
+Netzwerkbetrieb (§ 13 AGPL-3.0)
+
+Die Weboberfläche (`bh serve`) ist eine Interaktion über ein Netz im Sinne des
+§ 13 AGPL-3.0. Wer eine geänderte Fassung betreibt und sie anderen über ein
+Netz zugänglich macht, muss diesen Nutzern den vollständigen Quelltext seiner
+Fassung anbieten. Die Oberfläche trägt dafür eine Fußzeile mit dem Verweis auf
+das Projekt; wer den Code ändert, trägt dort den Verweis auf die eigene
+Fassung ein, statt die Fußzeile zu entfernen.
+
+------------------------------------------------------------------------------
 Kommerzielle Lizenz
 
 Wer die Software einsetzen möchte, ohne den Pflichten der AGPL-3.0 zu
@@ -43,9 +53,9 @@ erwerben. Anfragen an den Urheber.
 ------------------------------------------------------------------------------
 Marken
 
-„bh" und „bh – Buchhaltung" als Bezeichnung dieses Projekts sind von der
-AGPL-3.0 nicht erfasst. Abgeleitete Werke dürfen den Quelltext unter den
-Bedingungen der Lizenz verwenden, aber nicht den Projektnamen führen.
+„llm-buchhaltung" als Bezeichnung dieses Projekts ist von der AGPL-3.0 nicht
+erfasst. Abgeleitete Werke dürfen den Quelltext unter den Bedingungen der
+Lizenz verwenden, aber nicht den Projektnamen führen.
 
 ------------------------------------------------------------------------------
 Fremde Bestandteile

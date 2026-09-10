@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Vorjahr als eigenes Geschaeftsjahr anlegen.
 
 Der Vorjahresvergleich der Bilanz und der GuV soll aus der Datenbank kommen,

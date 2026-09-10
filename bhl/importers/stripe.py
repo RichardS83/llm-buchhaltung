@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2025-2026 RichardS83
 """Stripe-Importer: Ausgangsrechnungen und Bewegungen auf dem Stripe-Guthaben.
 
 Nur Standardbibliothek, Zugriff über die REST-Schnittstelle.
