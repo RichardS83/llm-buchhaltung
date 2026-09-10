@@ -64,13 +64,22 @@ AO Datenzugriff auf die betrieblichen Daten besteht.
 
 | | GmbH / UG (SKR04) | private Einkommensteuer |
 |---|---|---|
-| **Buchführung** | doppelt, HGB, Realisationsprinzip | doppelt, Zufluss/Abfluss § 11 EStG inkl. Zehn-Tage-Regel |
-| **Rechenwerke** | Bilanz nach § 266 HGB, GuV, je mit Vorjahresspalte | Vermögensübersicht, Ermittlung des zu versteuernden Einkommens |
+| **Buchführung** | doppelt, nach HGB, Realisationsprinzip | doppelt geführt, gerechnet nach § 11 EStG — Zufluss/Abfluss inkl. Zehn-Tage-Regel |
+| **Rechenwerke** | Bilanz nach § 266 HGB, GuV, je mit Vorjahresspalte | Überschussrechnung, Ermittlung des zu versteuernden Einkommens, Vermögensübersicht |
 | **Formulare** | Überleitung Handels- → Steuerbilanz, Kennzahlen für **KSt** und **GewSt** | **Anlage V je Objekt, zeilengenau nach Vordruck** (AfA linear, § 82b EStDV) |
 | **weitere Einkunftsarten** | — | Anlage N, S, KAP als Kontengruppen, die in die Einkünfte einfließen — keine zeilengenaue Formularausgabe |
 | **Umsatzsteuer** | **UStVA** monatlich oder vierteljährlich, ELSTER-Kennzahlen, § 13b, Dauerfristverlängerung (§ 46 UStDV) | — |
 | **Fristen** | KSt, GewSt, USt-Jahreserklärung, **Zusammenfassende Meldung**, E-Bilanz, Offenlegung; Größenklasse klein / kleinst (§ 267a HGB) | Einkommensteuererklärung nach § 149 AO, verlängert nach § 109 AO |
 | **Vorjahr** | Salden aus dem Jahresabschlussbericht als eine belegte Buchung | Import einer ausgefertigten ESt-Erklärung (DATEV-PDF) |
+
+**Warum „doppelt" auch bei der privaten Erklärung?** Verlangt wird das nicht —
+für Vermietung und Verpachtung schuldet niemand eine kaufmännische
+Buchführung, sondern eine Überschussrechnung. Die Anwendung bucht trotzdem in
+Soll und Haben, weil sie sich damit selbst kontrolliert: Jeder Satz muss
+aufgehen, und die Vermögensübersicht — steuerlich bedeutungslos, niemand
+verlangt sie — geht nur auf, solange keine Buchung fehlt. Abgegeben wird
+davon nichts; heraus kommt die Anlage V und die Einkünfteermittlung. Das
+Doppelte ist die Prüfmechanik, nicht das Ergebnis.
 
 Für beide Betriebsarten gleich:
 
