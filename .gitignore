@@ -14,8 +14,11 @@
 
 # Mandantendaten: Stammdaten, Belegarchiv, Buchungen, Auswertungen.
 # Der Beispielmandant ist die einzige Ausnahme — er enthält erfundene Zahlen.
+# Die Ausnahmen sind bewusst exakt und nicht `beispiel*/`: ein echter Mandant
+# mit einem Kürzel, das so anfängt, wäre sonst still versionierbar.
 mandanten/*
-!mandanten/beispiel*/
+!mandanten/beispiel/
+!mandanten/beispiel-privat/
 !mandanten/.gitkeep
 
 # Erzeugte Auswertungen

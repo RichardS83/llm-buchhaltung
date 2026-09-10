@@ -239,6 +239,73 @@ class Abgabesperre(unittest.TestCase):
         self.assertIn("FREI", r.stdout)
 
 
+class Ueberleitung(unittest.TestCase):
+    """Die steuerliche Ueberleitung muss gegen die Kontensalden gehalten werden.
+
+    Bis zum 10.09.2026 rechnete `bhl.steuern.pruefen` die Abweichungen zwar
+    aus, wurde von `bh abgabe` aber nie aufgerufen - nur die Weboberflaeche
+    benutzte sie. Ein Zahlendreher in steuern.json kam damit ungeprueft durch,
+    obwohl das README das Gegenteil zusagte. Dieser Test haelt die Verdrahtung
+    fest.
+    """
+
+    SPEC = "mandanten/beispiel/2025/steuern.json"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.dbp = os.path.join(self.tmp, "probe.sqlite")
+        self.pfad = os.path.join(WURZEL, self.SPEC)
+        with open(self.pfad, encoding="utf-8") as fh:
+            self.original = fh.read()
+        d = "mandanten/beispiel/2025"
+        for args in (("init", "beispiel", "2025"),
+                     ("eb", "beispiel", "2025", f"{d}/eb.csv"),
+                     ("buchen", "beispiel", "2025", f"{d}/buchungen.csv")):
+            subprocess.run([sys.executable, os.path.join(WURZEL, "bh"), "--db", self.dbp, *args],
+                           capture_output=True, text=True, cwd=WURZEL, check=True)
+
+    def tearDown(self):
+        with open(self.pfad, "w", encoding="utf-8") as fh:
+            fh.write(self.original)
+
+    def abgabe(self):
+        return subprocess.run([sys.executable, os.path.join(WURZEL, "bh"), "--db", self.dbp,
+                               "abgabe", "beispiel", "2025"],
+                              capture_output=True, text=True, cwd=WURZEL)
+
+    def test_unverfaelscht_frei(self):
+        r = self.abgabe()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FREI", r.stdout)
+
+    def test_zahlendreher_sperrt(self):
+        """Der Steuerbilanzgewinn traegt `quelle: guv` und wird gegen das
+        tatsaechliche Jahresergebnis gehalten."""
+        spec = json.loads(self.original)
+        spec["abschnitte"][0]["zeilen"][0]["betrag"] = 999999   # statt 369000
+        with open(self.pfad, "w", encoding="utf-8") as fh:
+            json.dump(spec, fh, ensure_ascii=False, indent=2)
+        r = self.abgabe()
+        self.assertEqual(r.returncode, 1, "Eine Abweichung muss sperren:\n" + r.stdout)
+        self.assertIn("ABWEICHUNG", r.stdout)
+        self.assertIn("GESPERRT", r.stdout)
+
+    def test_kontengestuetzte_zeile_wird_geprueft(self):
+        """Zeilen mit `konten` werden gegen die Summe dieser Salden gehalten."""
+        spec = json.loads(self.original)
+        for z in spec["abschnitte"][0]["zeilen"]:
+            if z.get("konten") == ["4900"]:
+                z["betrag"] = -123456          # echt: -500000
+                break
+        else:
+            self.fail("Zeile mit konten=['4900'] nicht gefunden")
+        with open(self.pfad, "w", encoding="utf-8") as fh:
+            json.dump(spec, fh, ensure_ascii=False, indent=2)
+        r = self.abgabe()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("ABWEICHUNG", r.stdout)
+
+
 class KeineEchtdaten(unittest.TestCase):
     """Wache gegen den Fehler, der dieses Repository ruinieren wuerde.
 

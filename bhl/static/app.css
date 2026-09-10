@@ -363,15 +363,18 @@ tr:hover > td > .hinweg { color: var(--akzent); }
 .dokwahl .mono { font-size: .82em; }
 
 
-/* Lizenzhinweis nach § 13 AGPL-3.0. Er muss sichtbar sein - wer ihn
-   ausblendet, nimmt der Oberflaeche die Zusicherung, ueber die sie
-   ueberhaupt betrieben werden darf. */
+/* Lizenzhinweis nach § 13 AGPL-3.0. Er sitzt am Fuss der Seitenleiste, weil
+   die 100vh hoch und sticky ist - dort steht er ohne Scrollen im Bild. Als
+   Kind von <body> landete er in der zweiten Grid-Zeile unter dem Menue und
+   war auf keinem Bildschirm zu sehen. Wer ihn ausblendet, nimmt der
+   Oberflaeche die Zusicherung, unter der sie betrieben werden darf. */
 #lizenz {
-  padding: 14px 18px 22px;
+  margin-top: auto;
+  padding: 12px 18px 14px;
   border-top: 1px solid var(--linie);
-  font-size: 11.5px;
+  font-size: 11px;
+  line-height: 1.45;
   color: var(--fg-still);
-  text-align: center;
 }
 #lizenz a { color: inherit; text-decoration: underline; }
 #lizenz a:hover { color: var(--fg); }
