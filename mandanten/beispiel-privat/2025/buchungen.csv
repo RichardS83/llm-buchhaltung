@@ -1,0 +1,12 @@
+datum;text;soll;haben;betrag;beleg;art;ztext
+# Ein Mietobjekt über ein Jahr. Erfundene Zahlen.
+# Erfolgswirksam nur bei Zahlung (§ 11 EStG) — Ausnahme sind die AfA nach
+# § 7 EStG und der nach § 82b EStDV verteilte Erhaltungsaufwand.
+2025-06-30;Mieteinnahmen Wohnungen Jan-Jun;1200;4115;7.200,00;;;6 x 1.200,00
+2025-12-15;Mieteinnahmen Wohnungen Jul-Dez;1200;4115;7.200,00;;;6 x 1.200,00
+2025-12-15;Umlagen laufend 2025;1200;4120;2.400,00;;;Vorauszahlungen der Mieter
+2025-03-17;Schuldzinsen Musterbank 2025;6146;1200;6.000,00;;;Jahreskontoauszug
+2025-02-14;Grundsteuer, Wasser, Hauswart;6173;1200;2.400,00;;;umlagefähig
+2025-11-04;Hausverwaltung und Kontoführung;6176;1200;900,00;;;nicht umlagefähig
+2025-08-22;Malerarbeiten Treppenhaus;6155;1200;3.500,00;;;sofort abziehbar
+2025-12-31;AfA 2,50 % auf 320.000,00;6133;0129;8.000,00;;;§ 7 Abs. 4 EStG
