@@ -1,8 +1,8 @@
 blank_issues_enabled: true
 contact_links:
   - name: Sicherheitslücke
-    url: https://github.com/RichardS83/bh-buchhaltung/security/advisories/new
+    url: https://github.com/RichardS83/llm-buchhaltung/security/advisories/new
     about: Schwachstellen bitte vertraulich melden, nicht als öffentliches Issue.
   - name: Kommerzielle Lizenz
-    url: https://github.com/RichardS83/bh-buchhaltung/blob/main/NOTICE
+    url: https://github.com/RichardS83/llm-buchhaltung/blob/main/NOTICE
     about: Nutzung ohne die Offenlegungspflicht des § 13 AGPL.

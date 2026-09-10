@@ -3,7 +3,7 @@
 ## Eine Lücke melden
 
 Melde Schwachstellen **nicht** über ein öffentliches Issue, sondern über
-[GitHub Security Advisories](https://github.com/RichardS83/bh-buchhaltung/security/advisories/new).
+[GitHub Security Advisories](https://github.com/RichardS83/llm-buchhaltung/security/advisories/new).
 Antwort innerhalb von 14 Tagen.
 
 Bitte im Bericht: was betroffen ist, wie sich der Fehler auslösen lässt, was

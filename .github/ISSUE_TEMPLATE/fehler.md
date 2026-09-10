@@ -22,3 +22,6 @@ labels: fehler
 geht es?
 
 **Umgebung:** Betriebssystem, `python3 -V`, Commit oder Fassung
+
+<!-- Wenn ein Agent das Issue anlegt: siehe AGENTS.md, Abschnitt
+     „Zurückmelden". -->
