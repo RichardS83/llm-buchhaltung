@@ -3,6 +3,6 @@ contact_links:
   - name: Sicherheitslücke
     url: https://github.com/RichardS83/llm-buchhaltung/security/advisories/new
     about: Schwachstellen bitte vertraulich melden, nicht als öffentliches Issue.
-  - name: Kommerzielle Lizenz
+  - name: Nutzung außerhalb der AGPL
     url: https://github.com/RichardS83/llm-buchhaltung/blob/main/NOTICE
-    about: Nutzung ohne die Offenlegungspflicht des § 13 AGPL.
+    about: Dafür braucht es die ausdrückliche Zustimmung des Urhebers.

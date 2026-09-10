@@ -43,12 +43,16 @@ das Projekt; wer den Code ändert, trägt dort den Verweis auf die eigene
 Fassung ein, statt die Fußzeile zu entfernen.
 
 ------------------------------------------------------------------------------
-Kommerzielle Lizenz
+Nutzung außerhalb der AGPL
 
-Wer die Software einsetzen möchte, ohne den Pflichten der AGPL-3.0 zu
-unterliegen — insbesondere ohne den eigenen geänderten Quelltext nach § 13
-AGPL offenlegen zu müssen —, kann eine gesonderte kommerzielle Lizenz
-erwerben. Anfragen an den Urheber.
+Es gilt die AGPL-3.0, und zwar ausschließlich. Wer die Software einsetzen
+möchte, ohne ihren Pflichten zu unterliegen — insbesondere ohne den eigenen
+geänderten Quelltext nach § 13 AGPL offenlegen zu müssen —, braucht dafür die
+ausdrückliche Zustimmung des Urhebers. Sie wird im Einzelfall erteilt oder
+nicht; ein Anspruch darauf besteht nicht.
+
+Der Weg dorthin führt über ein Issue im Projekt:
+https://github.com/RichardS83/llm-buchhaltung/issues
 
 ------------------------------------------------------------------------------
 Marken
