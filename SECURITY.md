@@ -12,9 +12,9 @@ erfundenen Zahlen reicht immer aus, um eine Lücke zu zeigen.
 
 ## Was diese Anwendung schützt — und was nicht
 
-`bh` ist ein lokales Werkzeug. Es gibt keinen Server, keinen Mandantenzugriff
-über das Netz, keine Benutzerverwaltung. Das Sicherheitsmodell ist das des
-Rechners, auf dem es läuft.
+llm-buchhaltung ist ein lokales Werkzeug. Es gibt keinen Server, keinen
+Mandantenzugriff über das Netz, keine Benutzerverwaltung. Das
+Sicherheitsmodell ist das des Rechners, auf dem es läuft.
 
 Konkret:
 

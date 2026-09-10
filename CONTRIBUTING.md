@@ -5,9 +5,9 @@ steckt, das nicht passt.
 
 ## Was dieses Projekt ist — und was nicht
 
-`bh` ist eine kleine, nachvollziehbare doppelte Buchführung für deutsche
-Verhältnisse. Der Anspruch ist nicht Vollständigkeit, sondern dass jede Zahl
-bis zum Beleg zurückverfolgbar ist und der Code lesbar bleibt.
+llm-buchhaltung ist eine kleine, nachvollziehbare doppelte Buchführung für
+deutsche Verhältnisse. Der Anspruch ist nicht Vollständigkeit, sondern dass
+jede Zahl bis zum Beleg zurückverfolgbar ist und der Code lesbar bleibt.
 
 Willkommen sind:
 
