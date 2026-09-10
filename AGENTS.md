@@ -40,6 +40,11 @@ Kontobezeichnungen, Briefkopfzeilen der Kontoauszüge, eigene Belegregeln.
 `mandanten/beispiel/mandant.json` zeigt die Form. `bh init` ist wiederholbar:
 Eine geänderte Datei wird beim nächsten Lauf fortgeschrieben.
 
+Diese Angaben erfindest du nicht und leitest sie auch nicht aus einem Beleg
+ab. Rechtsform, Firmenname, Finanzamt, Steuernummer, IBANs und Mietobjekte
+erfragst du beim Menschen — einzeln, und sag jeweils, wofür du die Angabe
+brauchst. Eine geratene Steuernummer fällt erst beim Finanzamt auf.
+
 Private Einkommensteuer gehört in eine eigene Datenbank (`bh --db privat …`),
 weil bei einer Betriebsprüfung nach § 147 Abs. 6 AO Datenzugriff auf die
 betrieblichen Daten besteht.
