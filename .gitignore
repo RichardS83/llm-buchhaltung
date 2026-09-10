@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# Echte Daten gehören nicht ins Repository.
+#
+# Diese Anwendung führt die Bücher wirklicher Mandanten: Bankumsätze, Belege,
+# Steuererklärungen. Nichts davon wird versioniert. Wer die Regeln hier
+# lockert, veröffentlicht Kontoauszüge — die erste Zeile ist die wichtigste.
+# ---------------------------------------------------------------------------
+
+# Datenbanken samt aller Sicherungen (*.sicherung-*, *.vor-*)
+*.sqlite
+*.sqlite.*
+*.sqlite3
+*.db
+
+# Mandantendaten: Stammdaten, Belegarchiv, Buchungen, Auswertungen.
+# Der Beispielmandant ist die einzige Ausnahme — er enthält erfundene Zahlen.
+mandanten/*
+!mandanten/beispiel/
+!mandanten/.gitkeep
+
+# Erzeugte Auswertungen
+out/
+*.pdf.txt
+
+# Sicherungskopien einzelner Quelldateien
+*.vor-*
+*.orig
+*.bak
+*~
+
+# Zugangsdaten (die App liest aus dem Schlüsselbund; .env nur als Notausgang)
+.env
+.env.*
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Betriebssystem und Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
