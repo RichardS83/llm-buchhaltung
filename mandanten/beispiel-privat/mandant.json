@@ -1,0 +1,20 @@
+{
+  "kuerzel": "beispiel-privat",
+  "name": "Alex und Kim Beispiel",
+  "rechtsform": "Zusammenveranlagung (§ 26b EStG)",
+  "strasse": "Beispielstraße 1",
+  "plz": "10115",
+  "ort": "Berlin",
+  "steuernummer": "00/000/00000",
+  "finanzamt": "Musterstadt",
+  "kontenrahmen": "PRIVAT-ESt",
+  "bankkonten": [
+    { "iban": "DE02120300000000202051", "bezeichnung": "Girokonto", "konto": "1200" }
+  ],
+  "objekte": [
+    { "nr": 1, "name": "Beispielweg 2", "ort": "10115 Berlin",
+      "angeschafft": "2019-03-01", "afa_satz": 250, "aktenzeichen": null,
+      "darlehen": [ { "suffix": "10", "bezeichnung": "Musterbank" } ] }
+  ],
+  "kontobezeichnungen": { "1200": "Musterbank Girokonto" }
+}

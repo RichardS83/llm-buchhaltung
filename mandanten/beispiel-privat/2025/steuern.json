@@ -1,0 +1,32 @@
+{
+  "jahr": 2025,
+  "quelle": "erfundene Zahlen — dieser Mandant existiert nicht",
+  "abschnitte": [
+    {
+      "id": "einkommen",
+      "titel": "Ermittlung des zu versteuernden Einkommens",
+      "hinweis": "Hauptvordruck ESt 1 A",
+      "zeilen": [
+        { "text": "Einkünfte aus Vermietung und Verpachtung",
+          "betrag": -400000, "art": "start", "quelle": "guv",
+          "paragraf": "§ 21 EStG",
+          "hinweis": "Summe der Anlagen V, hier ein Objekt" },
+        { "text": "+ Einkünfte aus nichtselbständiger Arbeit (Person A)",
+          "betrag": 4800000,
+          "paragraf": "§ 19 EStG",
+          "platzhalter": {
+            "annahme": "48.000,00 EUR brutto, fortgeschrieben aus dem Vorjahr",
+            "grund": "Die Lohnsteuerbescheinigung 2025 liegt noch nicht vor.",
+            "aufloesen_durch": "Lohnsteuerbescheinigung 2025",
+            "gesetzt_am": "2026-02-01"
+          } },
+        { "text": "− Sonderausgaben (Vorsorgeaufwendungen)",
+          "betrag": -600000,
+          "paragraf": "§ 10 EStG" },
+        { "text": "= zu versteuerndes Einkommen", "betrag": 3800000, "art": "summe" }
+      ]
+    }
+  ],
+  "positionen": [],
+  "vergleich": { "aus_jahren": [], "hinweis": "kein Vorjahr im Beispiel" }
+}

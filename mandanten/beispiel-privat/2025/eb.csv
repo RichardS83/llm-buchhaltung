@@ -1,0 +1,8 @@
+datum;text;soll;haben;betrag;beleg;art;ztext
+# Vermögensübersicht 01.01.2025 — erfundene Zahlen, dieser Mandant existiert nicht.
+2025-01-01;Saldenvortrag;0110;9000;80.000,00;;eb;Grund und Boden Beispielweg 2
+2025-01-01;Saldenvortrag;0120;9000;320.000,00;;eb;Gebäude Beispielweg 2
+2025-01-01;Saldenvortrag;9000;0129;48.000,00;;eb;Kumulierte AfA 2019-2024
+2025-01-01;Saldenvortrag;1200;9000;15.000,00;;eb;Girokonto
+2025-01-01;Saldenvortrag;9000;3110;250.000,00;;eb;Darlehen Musterbank
+2025-01-01;Saldenvortrag;9000;2000;117.000,00;;eb;Privatvermögen
