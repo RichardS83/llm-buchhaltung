@@ -155,6 +155,34 @@ Hast du die Sache lokal schon behoben, mach einen Pull Request daraus; er
 wird unter der [CLA](CLA.md) angenommen, siehe
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+## Am Ende: den Link zur Oberfläche geben
+
+Der Mensch gibt frei, und er tut das in der Weboberfläche, nicht in deiner
+Textausgabe. **Jede Sitzung, in der du gebucht, geprüft oder etwas an den
+Zahlen geändert hast, endet damit, dass die Oberfläche läuft und du den Link
+nennst.** Ohne Aufforderung, als letzter Schritt:
+
+```bash
+./bh serve <mandant> <jahr> --ensure     # gibt http://127.0.0.1:8765/ aus
+```
+
+Der Befehl ist idempotent: Läuft die Oberfläche schon, startet er keinen
+zweiten Server, sondern gibt nur den Link aus. `bh serve` ohne `--ensure`
+blockiert, bis der Server beendet wird — starte ihn so nicht, du wartest sonst
+bis zum Zeitlimit.
+
+**Übernimm den ausgegebenen Link, schreibe ihn nicht aus dem Kopf.** Kommt die
+Oberfläche nicht hoch, ist der Rückgabewert 1 und es gibt keinen Link, sondern
+eine Meldung mit dem Pfad zum Protokoll. Dann nennst du die Meldung. Ein Link
+auf einen Server, der nicht läuft, ist schlimmer als keiner.
+
+Nenne dazu, was der Mensch dort ansehen soll — die Seite, auf der das steht,
+woran du gearbeitet hast, und was `bh abgabe` zuletzt gesagt hat. „Die
+Oberfläche läuft" allein ist keine Übergabe.
+
+Reines Lesen ist kein Auslöser. Wer nur einen Bericht ausgibt oder eine Frage
+beantwortet, braucht die Oberfläche nicht zu starten.
+
 ## Was du nie tust
 
 * eine Erklärung als abgabefertig bezeichnen, solange `bh abgabe` nein sagt
@@ -166,3 +194,5 @@ wird unter der [CLA](CLA.md) angenommen, siehe
 * Zahlen aus einem Bericht abschreiben, statt sie aus der Datenbank zu lesen
 * dem Menschen ein Ergebnis vorlegen, dessen Herkunft du nicht bis zur
   Einzelbuchung und zum Beleg zeigen kannst
+* eine Sitzung beenden, in der du gebucht hast, ohne dass die Oberfläche läuft
+  und du den Link genannt hast
