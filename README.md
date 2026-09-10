@@ -5,20 +5,33 @@ Arbeitsteilung:
 
 | | wer | was |
 |---|---|---|
-| **Einrichten** | das Modell | klont, legt Mandant und Kontenrahmen an, richtet Bankkonten und Belegarchiv ein |
-| **Buchen** | das Modell | liest Kontoauszüge und Belege, kontiert, bucht, holt Bankumsätze über die Schnittstellen |
-| **Anpassen** | das Modell | fehlt ein Konto, eine Frist, ein Auszugsformat — es ändert die Anwendung lokal und schreibt den Test dazu |
+| **Einrichten** | der Agent | klont, legt Mandant und Kontenrahmen an, richtet Bankkonten und Belegarchiv ein |
+| **Buchen** | der Agent | liest Kontoauszüge und Belege, kontiert, bucht, holt Bankumsätze über die Schnittstellen |
+| **Anpassen** | der Agent | fehlt ein Konto, eine Frist, ein Auszugsformat — er ändert die Anwendung lokal und schreibt den Test dazu |
 | **Prüfen** | die Anwendung | Soll gleich Haben, Bankbestand, § 11 EStG, Zehn-Tage-Regel, Abgabesperre |
-| **Freigeben** | der Mensch | liest die Auswertung, klappt jede Zahl bis zum Beleg auf, entscheidet und unterschreibt |
-| **Zurückmelden** | das Modell | was lokal fehlte oder falsch rechnete, wird hier als Issue gemeldet — ohne die Daten, an denen es auffiel |
+| **Zurückmelden** | der Agent | was lokal fehlte oder falsch rechnete, wird hier als Issue gemeldet — ohne die Daten, an denen es auffiel |
+| **Freigeben** | der Mensch | einmal am Ende: liest die Auswertung, klappt Zahlen bis zum Beleg auf, unterschreibt |
+
+Mit „der Agent" ist eine Coding-CLI gemeint, die auf dem Rechner läuft und
+Dateien und Shell bedienen darf — **Claude Code**, **OpenAI Codex**, **Gemini
+CLI**, Cursor und was sonst diese Form hat. Die Anwendung ist ein
+Kommandozeilenwerkzeug mit Textausgabe und einer SQLite-Datei; das ist genau
+die Oberfläche, mit der solche Agenten gut umgehen. Ihre Betriebsanleitung
+steht in [`AGENTS.md`](AGENTS.md) (Claude Code findet sie über
+[`CLAUDE.md`](CLAUDE.md)).
+
+Der Mensch kommt einmal vor, am Ende, und das ist Absicht: Wer jeden
+Buchungssatz selbst prüft, hat nichts gewonnen. Verlässlich ist die
+Arbeitsteilung nicht, weil ein Mensch mitliest, sondern weil die Anwendung
+deterministisch widerspricht.
 
 Die Anwendung ist kein fertiges Produkt, sondern die Unterlage, auf der ein
 Agent arbeitet. Deutsches Steuerrecht ändert Zeilennummern, Fristen und Sätze
 jedes Jahr, und jeder Mandant hat einen Fall, den der Kontenrahmen nicht kennt.
-Das Modell darf beides lokal geraderücken — und soll melden, was es geradegerückt
+Der Agent darf beides lokal geraderücken — und soll melden, was er geradegerückt
 hat, damit es beim nächsten nicht wieder fehlt.
 
-Das Modell arbeitet, die Anwendung widerspricht, der Mensch entscheidet. Die
+Der Agent arbeitet, die Anwendung widerspricht, der Mensch entscheidet. Die
 Prüfzeile ist der Grund, warum die anderen zusammen funktionieren:
 **in dieser Anwendung steckt kein Sprachmodell.** Kein API-Schlüssel, kein
 Netzabruf, keine Inferenz – gerechnet wird in ganzen Cent, geprüft wird gegen
@@ -29,8 +42,6 @@ Kontieren dagegen ist Urteilsarbeit – wozu gehört diese Zahlung, welcher
 Paragraf greift, ist dieser Beleg vollständig. Das kann ein Modell, und es ist
 schnell darin. Es darf nur nicht dieselbe Instanz sein, die das Ergebnis
 bestätigt.
-
-Wie ein Agent die Anwendung bedient, steht in [`AGENTS.md`](AGENTS.md).
 
 Technisch: Python-Standardbibliothek, SQLite, keine Abhängigkeiten außer
 `pdftotext` (Poppler) für den Belegimport.
@@ -49,7 +60,7 @@ identisch – der Unterschied steckt im Kontenrahmen und in einer Prüfung.
 
 ## Geländer
 
-Damit die Arbeitsteilung trägt, muss die Anwendung dem Modell widersprechen
+Damit die Arbeitsteilung trägt, muss die Anwendung dem Agenten widersprechen
 können. Vier Mechanismen tun das:
 
 * **Regelprüfungen** (`bh pruefen`): Soll gleich Haben, Bankbestand gegen

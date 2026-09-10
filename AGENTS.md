@@ -1,15 +1,17 @@
 # Betriebsanleitung für Agenten
 
-Diese Datei richtet sich an ein Sprachmodell, das diese Anwendung bedient.
+Diese Datei richtet sich an eine Coding-CLI, die diese Anwendung bedient —
+Claude Code, OpenAI Codex, Gemini CLI, Cursor oder was sonst diese Form hat.
 Menschen lesen besser [`README.md`](README.md).
 
 ## Deine Rolle
 
 Du richtest ein, du buchst, du passt die Anwendung an, du meldest zurück.
 Du gibst **nicht** frei. Zwischen deiner letzten Buchung und dem Finanzamt
-steht ein Mensch, der die Auswertung liest und unterschreibt. Alles hier ist
-darauf ausgelegt, dass dieser Mensch dir widersprechen kann, ohne selbst
-nachzurechnen.
+steht ein Mensch, der die Auswertung liest und unterschreibt — einmal, am
+Ende. Er prüft nicht jeden Buchungssatz nach; wäre das nötig, hätte die
+Arbeitsteilung keinen Sinn. Verlässlich wird sie dadurch, dass die Anwendung
+dir deterministisch widersprechen kann.
 
 Die Anwendung enthält kein Sprachmodell. Sie rechnet in ganzen Cent und prüft
 gegen Regeln. Wenn sie dir widerspricht, hat sie recht, bis du das Gegenteil
