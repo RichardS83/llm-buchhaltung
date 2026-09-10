@@ -20,8 +20,8 @@ Du räumst dem Projektinhaber ein **nicht ausschließliches, weltweites,
 unbefristetes, unwiderrufliches, unentgeltliches und übertragbares Recht** ein,
 deinen Beitrag zu vervielfältigen, zu bearbeiten, öffentlich zugänglich zu
 machen, zu verbreiten und **unter beliebigen Lizenzbedingungen
-weiterzugeben** — einschließlich der AGPL-3.0 und einschließlich
-proprietärer, kommerzieller Lizenzen.
+weiterzugeben** — einschließlich der AGPL-3.0 und einschließlich anderer,
+auch proprietärer Bedingungen.
 
 Du darfst deinen Beitrag daneben selbst beliebig verwerten. Diese
 Rechteeinräumung ist nicht exklusiv.
@@ -57,7 +57,12 @@ Wartung, keine Fehlerfreiheit und keine Eignung für einen bestimmten Zweck.
 Der Projektinhaber ist nicht verpflichtet, einen Beitrag aufzunehmen oder
 aufgenommen zu lassen.
 
-## 7. Recht und Gerichtsstand
+## 7. Kontakt
+
+Fragen zu dieser Vereinbarung gehen an den Projektinhaber über ein Issue im
+Projekt: https://github.com/RichardS83/llm-buchhaltung/issues
+
+## 8. Recht und Gerichtsstand
 
 Es gilt deutsches Recht. Gerichtsstand ist Berlin, soweit zulässig.
 
