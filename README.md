@@ -687,11 +687,11 @@ Umbuchung der Steuerkonten zum Bilanzstichtag, die sonst das vierte Quartal
 wieder aufheben würde.
 
 ```bash
-./bh import-qonto  <m> 2026        # Bankumsätze + angehängte Rechnungen
-./bh import-stripe <m> 2026        # Ausgangsrechnungen + Guthabenbewegungen
-python3 mandanten/<m>/erzeuge_buchungen.py 2026
-./bh buchen <m> 2026 mandanten/<m>/2026/buchungen.csv
-./bh ustva  <m> 2026 --quartal 2   # Eingabeblatt für Mein Elster
+./bh import-qonto  <m> <jahr>        # Bankumsätze + angehängte Rechnungen
+./bh import-stripe <m> <jahr>        # Ausgangsrechnungen + Guthabenbewegungen
+python3 mandanten/<m>/erzeuge_buchungen.py <jahr>
+./bh buchen <m> <jahr> mandanten/<m>/<jahr>/buchungen.csv
+./bh ustva  <m> <jahr> --quartal 2   # Eingabeblatt für Mein Elster
 ```
 
 Drei Dinge, die dabei leicht falsch laufen und deshalb ausdrücklich behandelt
@@ -713,7 +713,7 @@ sind:
 * **`vat_amount_cents` aus Qonto ist nur bei den Kontogebühren ein Beleg.** Dort
   steht die tatsächlich berechnete französische Steuer, und der Reverse Charge
   bemisst sich am Nettobetrag (Schlüssel `46f`). Bei Kartenumsätzen rät Qonto
-  dagegen 19 % hinein — auch bei Anthropic oder Bright Data, die 0 % berechnen.
+  dagegen 19 % hinein — auch bei Anbietern, die gar keine Steuer berechnen.
   Ein pauschaler Abzug dieses Feldes würde die Bemessungsgrundlage verkürzen.
 
 `voranmeldungen.csv` hält fest, was tatsächlich übermittelt wurde — Zeitraum,
