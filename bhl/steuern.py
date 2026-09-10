@@ -125,8 +125,10 @@ def pruefen(con: sqlite3.Connection, gj_id: int, spec: dict, ergebnis_cent: int)
 
     # Angenommene Werte sperren die Abgabe - nicht die Anzeige. Die Rechnung
     # wird vollstaendig gezeigt, damit man sieht, was der Platzhalter bewirkt.
+    # Eine Zeile, die nicht gegen ihre Konten aufgeht, sperrt genauso: sie ist
+    # entweder falsch abgeschrieben oder die Buchung fehlt.
     spec["platzhalter"] = platzhalter(spec)
-    spec["gesperrt"] = bool(spec["platzhalter"])
+    spec["gesperrt"] = bool(spec["platzhalter"]) or bool(spec["abweichungen"])
     return spec
 
 

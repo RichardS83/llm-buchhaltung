@@ -26,7 +26,7 @@ Aufrufe:
   bh beleg list <mandant> [--jahr]
   bh link <mandant> <jahr>                 Buchung <-> Bankumsatz <-> Beleg verknuepfen
   bh vorjahr <mandant> <jahr>              Vorjahressalden aus dem Abschluss uebernehmen
-  bh report <mandant> <jahr> <was>         saldenliste|bilanz|guv|journal|belege
+  bh report <mandant> <jahr> <was>         saldenliste|bilanz|guv|journal|belege|anlagen
   bh konto <mandant> <jahr> <kontonummer>
   bh serve <mandant> <jahr> [--port]       Web-Oberflaeche starten
   bh pruefen <mandant> <jahr>              Buchfuehrung auf Regelverstoesse pruefen
@@ -325,7 +325,7 @@ def cmd_abgabe(a):
     Aussage "sie ist fertig". Genau die gibt dieser Befehl - oder eben nicht,
     mit Rueckgabewert 1, damit auch ein Skript daran haengen kann.
     """
-    from bhl import fristen, pruefung
+    from bhl import fristen, pruefung, reports
     from bhl import steuern as st
     con = db.connect(DB)
     m = lade_mandant(con, a.mandant)
@@ -336,6 +336,10 @@ def cmd_abgabe(a):
     spec = st.laden(jd)
     if spec is None:
         sys.exit(f"Fehlt: {os.path.join(jd, 'steuern.json')}")
+    # Die Ueberleitung gegen die Kontensalden halten. Ohne diesen Schritt
+    # traegt die Freigabe nur die Buchfuehrung, nicht die Erklaerung - ein
+    # Zahlendreher in steuern.json kaeme ungeprueft durch.
+    spec = st.pruefen(con, g, spec, reports.ergebnis(con, g))
     offen = st.platzhalter(spec)
 
     art = "einkommensteuer" if rahmen.ueberschussrechnung else "koerperschaftsteuer"
@@ -363,17 +367,37 @@ def cmd_abgabe(a):
             print(f"               aufzulösen durch: {p['aufloesen_durch']}")
         print()
 
+    for a in spec.get("abschnitte", []):
+        for z in a["zeilen"]:
+            if z.get("abweichung"):
+                print(f"  ABWEICHUNG   {z['text']}")
+                print(f"               Erklärung {db.eur(z['betrag'])}"
+                      f" gegen Konten {db.eur(z.get('konten_saldo', 0))}"
+                      f" — Differenz {db.eur(z['abweichung'])} EUR")
+                print()
+    for p in spec.get("positionen", []):
+        if p.get("abweichung"):
+            print(f"  ABWEICHUNG   {p['text']}")
+            print(f"               Erklärung {db.eur(p['betrag'])}"
+                  f" gegen Konto {p['konto']} {db.eur(p.get('konten_saldo', 0))}"
+                  f" — Differenz {db.eur(p['abweichung'])} EUR")
+            print()
+
     d = pruefung.alles(con, g, rahmen)
     for b in d["befunde"]:
         if b["schwere"] == "fehler":
             print(f"  FEHLER       {b['text']}")
 
-    gesperrt = bool(offen) or d["fehler"]
+    abw = spec.get("abweichungen", 0)
+    gesperrt = bool(offen) or d["fehler"] or abw
     print()
     if gesperrt:
         teile = []
         if offen:
             teile.append(f"{len(offen)} Platzhalter")
+        if abw:
+            teile.append(f"{abw} Abweichung{'en' if abw > 1 else ''}"
+                         " zwischen Erklärung und Konten")
         if d["fehler"]:
             teile.append(f"{d['fehler']} Fehler in der Buchführung")
         print(f"GESPERRT — {' und '.join(teile)}. Die Erklärung ist nicht abgabefähig.")
