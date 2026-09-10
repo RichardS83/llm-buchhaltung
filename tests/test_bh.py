@@ -9,10 +9,13 @@ vom Kontenplan bis zur Bilanz durchlaeuft und aufgeht.
 """
 import json
 import os
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.request
 
 WURZEL = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, WURZEL)
@@ -378,3 +381,81 @@ class KeineEchtdaten(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Oberflaeche(unittest.TestCase):
+    """`bh serve --ensure` stellt genau einen Server sicher und nennt den Link.
+
+    AGENTS.md verlangt, dass jede Sitzung mit dem Link auf die laufende
+    Oberflaeche endet. Ohne diese Zusicherungen waere das eine Bitte an den
+    Agenten statt einer Eigenschaft der Anwendung.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.dbp = os.path.join(self.tmp, "probe.sqlite")
+        for args in (("init", "beispiel", "2025"),
+                     ("buchen", "beispiel", "2025",
+                      "mandanten/beispiel/2025/buchungen.csv")):
+            subprocess.run([sys.executable, os.path.join(WURZEL, "bh"),
+                            "--db", self.dbp, *args],
+                           capture_output=True, text=True, cwd=WURZEL, check=True)
+        self.port = self._freier_port()
+        self.kinder = []
+
+    def tearDown(self):
+        for p in self.kinder:
+            try:
+                os.killpg(os.getpgid(p), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    @staticmethod
+    def _freier_port():
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def _pids(self):
+        r = subprocess.run(["pgrep", "-f", f"serve beispiel 2025 --port {self.port}"],
+                           capture_output=True, text=True)
+        return [int(z) for z in r.stdout.split()]
+
+    def ensure(self):
+        return subprocess.run(
+            [sys.executable, os.path.join(WURZEL, "bh"), "--db", self.dbp, "serve",
+             "beispiel", "2025", "--port", str(self.port), "--ensure"],
+            capture_output=True, text=True, cwd=WURZEL, timeout=30)
+
+    def test_gibt_den_link_aus_und_startet_nur_einen(self):
+        erst = self.ensure()
+        self.assertEqual(erst.returncode, 0, erst.stderr)
+        adresse = erst.stdout.strip()
+        self.assertEqual(adresse, f"http://127.0.0.1:{self.port}/")
+        self.kinder = self._pids()
+        self.assertEqual(len(self.kinder), 1, "kalter Start ergab nicht genau einen Server")
+
+        # Die Oberflaeche antwortet auch wirklich - ein Link auf einen toten
+        # Server waere schlimmer als keiner.
+        with urllib.request.urlopen(adresse, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+
+        zweit = self.ensure()
+        self.assertEqual(zweit.returncode, 0, zweit.stderr)
+        self.assertEqual(zweit.stdout.strip(), adresse)
+        self.kinder = self._pids()
+        self.assertEqual(len(self.kinder), 1,
+                         "der zweite Aufruf hat einen weiteren Server gestartet")
+
+    def test_belegter_port_meldet_statt_abzustuerzen(self):
+        erst = self.ensure()
+        self.assertEqual(erst.returncode, 0, erst.stderr)
+        self.kinder = self._pids()
+
+        r = subprocess.run(
+            [sys.executable, os.path.join(WURZEL, "bh"), "--db", self.dbp, "serve",
+             "beispiel", "2025", "--port", str(self.port), "--kein-browser"],
+            capture_output=True, text=True, cwd=WURZEL, timeout=30)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("belegt", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)

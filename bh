@@ -37,10 +37,12 @@ Aufrufe:
 from __future__ import annotations
 
 import argparse
+import errno
 import glob
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -466,13 +468,62 @@ def cmd_vorjahr(a):
           f"Einstellung in Ruecklagen {db.eur(r['verwendung'])}.")
 
 
+def _antwortet(port):
+    """Laeuft auf dem Port bereits *unsere* Oberflaeche? Nicht irgendein Dienst."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/mandanten", timeout=1) as r:
+            return isinstance(_json.loads(r.read().decode("utf-8")), (list, dict))
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
 def cmd_serve(a):
     from bhl import web
+    adresse = f"http://127.0.0.1:{a.port}/"
+
+    if getattr(a, "ensure", False):
+        # Idempotent: laeuft die Oberflaeche schon, wird kein zweiter Server
+        # gestartet - es wird nur der Link ausgegeben.
+        if _antwortet(a.port):
+            print(adresse)
+            return
+        import subprocess
+        import tempfile
+        protokoll = tempfile.NamedTemporaryFile(
+            prefix="bh-serve-", suffix=".log", delete=False)
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "--db", a.db, "serve",
+             a.mandant, str(a.jahr), "--port", str(a.port), "--kein-browser"],
+            cwd=WURZEL, stdout=protokoll, stderr=subprocess.STDOUT,
+            start_new_session=True)
+        for _ in range(40):                       # bis zu 10 Sekunden
+            if _antwortet(a.port):
+                print(adresse)
+                return
+            time.sleep(0.25)
+        protokoll.close()
+        print(f"Oberflaeche kam auf Port {a.port} nicht hoch. Protokoll: "
+              f"{protokoll.name}", file=sys.stderr)
+        raise SystemExit(1)
+
     # Die Oberflaeche zeigt beide Datenbanken nebeneinander - die Dateien
     # bleiben getrennt, der Umschalter im Kopf nicht.
     pfade = [DB] + [p for p in (db_pfad("buchhaltung"), db_pfad("privat"))
                     if p != DB and os.path.exists(p)]
-    web.starten(pfade, WURZEL, a.mandant, a.jahr, a.port, oeffnen=not a.kein_browser)
+    try:
+        web.starten(pfade, WURZEL, a.mandant, a.jahr, a.port,
+                    oeffnen=not a.kein_browser)
+    except OSError as e:
+        if e.errno != errno.EADDRINUSE:
+            raise
+        laeuft = "unsere Oberflaeche" if _antwortet(a.port) else "ein anderer Dienst"
+        raise SystemExit(
+            f"Port {a.port} ist belegt - dort laeuft bereits {laeuft}.\n"
+            f"Entweder {adresse} benutzen oder mit --port einen anderen waehlen.")
 
 
 def cmd_konto(a):
@@ -561,7 +612,11 @@ def main():
 
     s = sub.add_parser("serve"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
     s.add_argument("--port", type=int, default=8765)
-    s.add_argument("--kein-browser", action="store_true"); s.set_defaults(f=cmd_serve)
+    s.add_argument("--kein-browser", action="store_true")
+    s.add_argument("--ensure", action="store_true",
+                   help="sicherstellen, dass die Oberflaeche laeuft, "
+                        "und nur den Link ausgeben (idempotent)")
+    s.set_defaults(f=cmd_serve)
 
     s = sub.add_parser("konto"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
     s.add_argument("nummer"); s.set_defaults(f=cmd_konto)
