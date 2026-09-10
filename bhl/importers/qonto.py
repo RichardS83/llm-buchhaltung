@@ -35,7 +35,7 @@ ZEITLIMIT = 60
 
 # Qonto weist Anfragen ohne eigenen User-Agent mit 403 ab. Die Standardkennung
 # von urllib genuegt nicht.
-KENNUNG = "bh-buchhaltung/1.0"
+KENNUNG = "llm-buchhaltung/1.0"
 
 
 def _hole(pfad: str, params: dict | None = None) -> dict:

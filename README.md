@@ -1,10 +1,39 @@
-# bh – Buchhaltung
+# llm-buchhaltung
 
-Kleine, nachvollziehbare doppelte Buchführung – für Kapitalgesellschaften nach
-HGB (mit Umsatzsteuer-Voranmeldung) **und** für die private Einkommensteuer.
-Python-Standardbibliothek, SQLite, keine externen Abhängigkeiten außer
-`pdftotext` (poppler) für den Belegimport. **Keine LLM-API** – die Kontierung
-macht ein Mensch (oder Claude in der Session), die App rechnet und prüft.
+Doppelte Buchführung für deutsche Verhältnisse, gebaut für eine bestimmte
+Arbeitsteilung:
+
+| | wer | was |
+|---|---|---|
+| **Einrichten** | das Modell | klont, legt Mandant und Kontenrahmen an, richtet Bankkonten und Belegarchiv ein |
+| **Buchen** | das Modell | liest Kontoauszüge und Belege, kontiert, bucht, holt Bankumsätze über die Schnittstellen |
+| **Anpassen** | das Modell | fehlt ein Konto, eine Frist, ein Auszugsformat — es ändert die Anwendung lokal und schreibt den Test dazu |
+| **Prüfen** | die Anwendung | Soll gleich Haben, Bankbestand, § 11 EStG, Zehn-Tage-Regel, Abgabesperre |
+| **Freigeben** | der Mensch | liest die Auswertung, klappt jede Zahl bis zum Beleg auf, entscheidet und unterschreibt |
+| **Zurückmelden** | das Modell | was lokal fehlte oder falsch rechnete, wird hier als Issue gemeldet — ohne die Daten, an denen es auffiel |
+
+Die Anwendung ist kein fertiges Produkt, sondern die Unterlage, auf der ein
+Agent arbeitet. Deutsches Steuerrecht ändert Zeilennummern, Fristen und Sätze
+jedes Jahr, und jeder Mandant hat einen Fall, den der Kontenrahmen nicht kennt.
+Das Modell darf beides lokal geraderücken — und soll melden, was es geradegerückt
+hat, damit es beim nächsten nicht wieder fehlt.
+
+Das Modell arbeitet, die Anwendung widerspricht, der Mensch entscheidet. Die
+Prüfzeile ist der Grund, warum die anderen zusammen funktionieren:
+**in dieser Anwendung steckt kein Sprachmodell.** Kein API-Schlüssel, kein
+Netzabruf, keine Inferenz – gerechnet wird in ganzen Cent, geprüft wird gegen
+Regeln, und dasselbe Eingangsmaterial ergibt zweimal dasselbe Ergebnis. Eine
+Buchführung, deren Zahlen von einem Modell abhängen, ist keine Buchführung.
+
+Kontieren dagegen ist Urteilsarbeit – wozu gehört diese Zahlung, welcher
+Paragraf greift, ist dieser Beleg vollständig. Das kann ein Modell, und es ist
+schnell darin. Es darf nur nicht dieselbe Instanz sein, die das Ergebnis
+bestätigt.
+
+Wie ein Agent die Anwendung bedient, steht in [`AGENTS.md`](AGENTS.md).
+
+Technisch: Python-Standardbibliothek, SQLite, keine Abhängigkeiten außer
+`pdftotext` (Poppler) für den Belegimport.
 
 Zwei Betriebsarten, dieselbe Mechanik:
 
@@ -18,6 +47,21 @@ Zwei Betriebsarten, dieselbe Mechanik:
 Buchen, Belegarchiv, Bankimport, Auswertungsmaschine und Oberfläche sind
 identisch – der Unterschied steckt im Kontenrahmen und in einer Prüfung.
 
+## Geländer
+
+Damit die Arbeitsteilung trägt, muss die Anwendung dem Modell widersprechen
+können. Vier Mechanismen tun das:
+
+* **Regelprüfungen** (`bh pruefen`): Soll gleich Haben, Bankbestand gegen
+  Kontoauszug, Zehn-Tage-Regel, § 11 EStG bei der Überschussrechnung.
+* **Platzhalter mit Auflösungsbedingung**: eine geschätzte Zahl trägt, warum
+  sie geschätzt ist, worauf sie beruht und welcher Beleg sie ablösen würde.
+* **Abgabesperre** (`bh abgabe`): solange ein Platzhalter offen ist, sagt die
+  Anwendung nein. Nicht als Warnung – als Rückgabewert.
+* **Drilldown**: jede Zahl jeder Auswertung klappt bis zur Einzelbuchung und
+  zum Beleg auf. Was sich nicht bis zum Papier zurückverfolgen lässt, ist
+  keine Grundlage für eine Unterschrift.
+
 ## Loslegen
 
 Voraussetzung ist Python 3.11 oder neuer. Für den Belegimport zusätzlich
@@ -25,8 +69,8 @@ Voraussetzung ist Python 3.11 oder neuer. Für den Belegimport zusätzlich
 poppler-utils`). Sonst nichts – keine Pakete, keine Datenbank, kein Dienst.
 
 ```bash
-git clone https://github.com/RichardS83/bh-buchhaltung.git
-cd bh-buchhaltung
+git clone https://github.com/RichardS83/llm-buchhaltung.git
+cd llm-buchhaltung
 
 ./bh init   beispiel 2025
 ./bh eb     beispiel 2025 mandanten/beispiel/2025/eb.csv
