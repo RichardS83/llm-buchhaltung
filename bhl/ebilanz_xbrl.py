@@ -185,6 +185,52 @@ NICHT_EINGEFORDERT = "bs.eqLiab.equity.subscribed.unpaidCap"
 TEILE = {EINGEFORDERT: ", eingefordert", NICHT_EINGEFORDERT: ", nicht eingefordert"}
 
 
+def _eb_zeilen(con: sqlite3.Connection, gj_id: int, datum: str | None = None) -> list:
+    """Kontensalden der Eröffnungsbuchungen (`art = eb`), wahlweise nur eines Tages."""
+    return con.execute(f"""
+      SELECT k.nummer, k.bezeichnung, SUM(z.soll_cent) - SUM(z.haben_cent) AS saldo
+      FROM buchungszeile z JOIN buchung b ON b.id = z.buchung_id
+      JOIN konto k ON k.id = z.konto_id
+      WHERE b.gj_id = ? AND b.art = 'eb'{" AND b.datum = ?" if datum else ""}
+      GROUP BY k.id ORDER BY k.nummer""", (gj_id, datum) if datum else (gj_id,)).fetchall()
+
+
+def eigenkapital_vorjahr(con: sqlite3.Connection, gj_id: int, mandant_dir: str, stamm: dict,
+                         tax: dict | None = None) -> int:
+    """Eigenkapital am Ende des vorangegangenen Wirtschaftsjahres — der Anfang
+    des Betriebsvermögensvergleichs.
+
+    * Steht das Vorjahr in der Datenbank, kommt es aus dessen Abschluss.
+    * Im Gründungsjahr (Jahr des Gesellschaftsvertrags, wie bei der
+      Eröffnungsbilanz) gibt es kein Vorjahr: 0. Die Eröffnungsbuchung ist hier
+      die Gründung selbst, und was an Kapital eingezahlt ist, ist Einlage.
+    * Sonst beginnt nur die Buchführung in `bh` später als die Gesellschaft.
+      Dann tragen die Eröffnungsbuchungen das Eigenkapital des Vorjahres
+      (Bilanzenzusammenhang, § 252 Abs. 1 Nr. 1 HGB, § 4 Abs. 1 EStG) — ohne
+      sie stünde das ganze Anfangskapital als Einlage im Vergleich.
+    """
+    tax = tax or taxonomie()
+    gj = con.execute("SELECT mandant_id, jahr FROM geschaeftsjahr WHERE id=?", (gj_id,)).fetchone()
+    vorjahr = con.execute("SELECT id FROM geschaeftsjahr WHERE mandant_id=? AND jahr=?",
+                          (gj["mandant_id"], gj["jahr"] - 1)).fetchone()
+    if vorjahr:
+        return abschluss(con, vorjahr["id"], mandant_dir, tax).eigenkapital
+    if fristen.eroeffnungsbilanz_im_jahr(stamm, gj["jahr"]):
+        return 0
+    zeilen = _eb_zeilen(con, gj_id)
+    if not zeilen:
+        return 0
+    zuordnung = ebilanz_mod.laden(mandant_dir)
+    if zuordnung is None:
+        raise EBilanzFehler("Keine Taxonomie-Zuordnung: mandanten/<kürzel>/ebilanz.csv fehlt.")
+    try:
+        return _auswerten(zeilen, zuordnung, 0, tax, nur_bilanz=True).eigenkapital
+    except EBilanzFehler as e:
+        raise EBilanzFehler(f"Eigenkapital zu Beginn {gj['jahr']} aus den Eröffnungsbuchungen "
+                            f"(kein Vorjahr in der Datenbank, nicht das Gründungsjahr): {e}"
+                            ) from None
+
+
 def eroeffnung(con: sqlite3.Connection, gj_id: int, mandant_dir: str, stamm: dict,
                tax: dict | None = None) -> Abschluss:
     """Die Eröffnungsbilanz (§ 5b Abs. 1 Satz 4 EStG): die Eröffnungsbuchungen
@@ -200,12 +246,7 @@ def eroeffnung(con: sqlite3.Connection, gj_id: int, mandant_dir: str, stamm: dic
     if zuordnung is None:
         raise EBilanzFehler("Keine Taxonomie-Zuordnung: mandanten/<kürzel>/ebilanz.csv fehlt.")
     beginn = con.execute("SELECT beginn FROM geschaeftsjahr WHERE id=?", (gj_id,)).fetchone()[0]
-    zeilen = con.execute("""
-      SELECT k.nummer, k.bezeichnung, SUM(z.soll_cent) - SUM(z.haben_cent) AS saldo
-      FROM buchungszeile z JOIN buchung b ON b.id = z.buchung_id
-      JOIN konto k ON k.id = z.konto_id
-      WHERE b.gj_id = ? AND b.art = 'eb' AND b.datum = ?
-      GROUP BY k.id ORDER BY k.nummer""", (gj_id, beginn)).fetchall()
+    zeilen = _eb_zeilen(con, gj_id, beginn)
     if not zeilen:
         raise EBilanzFehler(f"Keine Eröffnungsbuchungen am {beginn}.")
     umbuchen = {}
@@ -353,7 +394,8 @@ def xbrl(a: Abschluss, *, stamm: dict, gj: dict, steuernummer: str, bufa: str,
               for el, c in sorted(a.werte.items())]
     # Betriebsvermögensvergleich: Gewinn = EK Ende - EK Anfang + Entnahmen - Einlagen.
     # Einlagen und Entnahmen sind, was die Eigenkapitaländerung nicht aus dem
-    # Ergebnis erklärt.
+    # Ergebnis erklärt. EK Anfang liefert `eigenkapital_vorjahr()` — auch dann,
+    # wenn das Vorjahr nicht in der Datenbank steht.
     rest = a.eigenkapital - eigenkapital_vorjahr - a.ergebnis
     einlagen, entnahmen = (rest, None) if rest > 0 else (None, -rest if rest else None)
     for el, c in () if eroeffnung else (("BVV.profitLoss", a.ergebnis),

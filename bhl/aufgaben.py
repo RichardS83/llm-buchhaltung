@@ -26,6 +26,8 @@ aber Aufmerksamkeit, falls es ausbleibt.
 
 from __future__ import annotations
 
+import re
+
 ERLEDIGT_PUNKT = ("behoben", "erledigt", "entschieden")
 RANG_PRIO = {"hoch": 0, "mittel": 1, "niedrig": 2}
 
@@ -35,6 +37,23 @@ def _sortierschluessel(a: dict) -> tuple:
             a.get("frist") or "9999-12-31",
             RANG_PRIO.get(a.get("prioritaet"), 1),
             a.get("titel", ""))
+
+
+def _jahr_des_termins(t: dict) -> int | None:
+    """Das Jahr, fuer das ein Termin der Fristenliste gilt.
+
+    Die Eintraege aus `fristen.alle` tragen kein eigenes Jahresfeld; das Jahr
+    steht nur in der Bezeichnung - aber nicht immer am Ende ("Jahresabschluss
+    2025 unterschreiben und feststellen", "Eröffnungsbilanz zum 01.07.2025 als
+    E-Bilanz übermitteln"). Massgeblich ist deshalb die letzte vierstellige
+    Jahreszahl darin; bei der Eroeffnungsbilanz ist das das Gruendungsjahr,
+    und genau fuer dieses Geschaeftsjahr ist sie zu uebermitteln. Traegt ein
+    Eintrag einmal ein Feld `jahr`, gilt dieses.
+    """
+    if t.get("jahr") is not None:
+        return int(t["jahr"])
+    treffer = re.findall(r"(?<!\d)((?:19|20)\d\d)(?!\d)", t.get("bezeichnung") or "")
+    return int(treffer[-1]) if treffer else None
 
 
 def sammeln(paket: dict | None, offene: dict, termine: dict, steuer: dict | None,
@@ -72,10 +91,11 @@ def sammeln(paket: dict | None, offene: dict, termine: dict, steuer: dict | None
     # die Entscheidung muss vor der Abgabe fallen, nicht irgendwann.
     abgabe_frist = {a["art"]: a["frist"] for a in (paket or {}).get("abgaben", [])
                     if a["zustand"] != "erledigt"}
-    # Ohne Abgabepaket (private Erklaerung) kommt die Frist aus der Fristenliste.
+    # Ohne Abgabepaket (private Erklaerung) kommt die Frist aus der Fristenliste,
+    # zugeordnet ueber die Art des Termins und sein Jahr.
     for t in termine.get("eintraege", []):
         if (t["status"] in ("offen", "verlaengert", "ueberfaellig")
-                and t["bezeichnung"].endswith(str(jahr))):
+                and _jahr_des_termins(t) == jahr):
             abgabe_frist.setdefault(t["art"], t["faellig"])
     abgabe_titel = {a["art"]: a["titel"] for a in (paket or {}).get("abgaben", [])}
     for p in offene.get("punkte", []):

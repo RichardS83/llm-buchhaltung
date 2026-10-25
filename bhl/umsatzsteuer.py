@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 import sqlite3
 
 # Bemessungsgrundlagen in vollen Euro, Steuerbeträge mit Cent.
@@ -328,18 +329,75 @@ def einstellungen(mandant_dir: str) -> dict:
     }
 
 
-def zahlung_aus_bank(con: sqlite3.Connection, mandant_id: int, z: "Zeitraum") -> dict | None:
+def _cent_aus_text(wert) -> int | None:
+    """'131.00', '-12,5', '131' oder 13100 (schon Cent) -> Cent. Ohne Gleitkomma."""
+    if isinstance(wert, int):
+        return wert
+    m = re.fullmatch(r"\s*([+-]?)(\d+)(?:[.,](\d{1,2}))?\s*", str(wert or ""))
+    if not m:
+        return None
+    c = int(m.group(2)) * 100 + int((m.group(3) or "0").ljust(2, "0"))
+    return -c if m.group(1) == "-" else c
+
+
+def angemeldete_zahllast(con: sqlite3.Connection, mandant_id: int, z: "Zeitraum") -> int | None:
+    """Kz 83, wie sie uebermittelt und in `voranmeldung` festgehalten wurde.
+    None, wenn nur der Stand (ohne Werte) bekannt ist."""
+    werte = stand(con, mandant_id, z).get("kennzahlen") or {}
+    for schluessel in ("Kz83", "83"):
+        if schluessel in werte:
+            return _cent_aus_text(werte[schluessel])
+    return None
+
+
+def zahlung_aus_bank(con: sqlite3.Connection, mandant_id: int, z: "Zeitraum",
+                     zahllast_buch: int | None = None) -> dict | None:
     """Die Abbuchung der Zahllast im Bankkonto, erkannt am Verwendungszweck der
-    Berliner Finanzämter: "UMS.ST 2VJ.26 123,45EUR". Nur Quartale."""
+    Berliner Finanzämter: "UMS.ST 2VJ.26 123,45EUR". Nur Quartale.
+
+    Bezahlt ist der Zeitraum erst, wenn die Summe der Abbuchungen die Zahllast
+    deckt - nicht schon mit der ersten. Sonst bleibt nach einer Teilzahlung oder
+    einer berichtigten, hoeheren Anmeldung der Rest unsichtbar, und auf ihn
+    laufen Saeumniszuschlaege (§ 240 AO).
+
+    Massstab ist die uebermittelte Kz 83 aus `voranmeldung`; fehlt sie (Stand
+    nur aus voranmeldungen.csv), gilt `zahllast_buch`, sonst die Kz 83 aus der
+    Buchfuehrung mit den Regelsaetzen.
+
+    Rueckgabe None, wenn keine Abbuchung da ist. Sonst `buchungsdatum` = Tag der
+    Abbuchung, mit der die Zahllast gedeckt war - None, solange ein Rest offen
+    ist -, dazu `bezahlt_cent`, `zahllast_cent`, `offen_cent` und `gedeckt`.
+    """
     if not z.quartal:
         return None
     marke = f"UMS.ST {z.quartal}VJ.{z.jahr % 100:02d}"
-    r = con.execute(
-        "SELECT t.buchungsdatum, t.betrag_cent, t.text FROM banktransaktion t"
+    rows = con.execute(
+        "SELECT t.id, t.buchungsdatum, t.betrag_cent, t.text FROM banktransaktion t"
         " JOIN bankkonto k ON k.id = t.bankkonto_id"
         " WHERE k.mandant_id = ? AND t.betrag_cent < 0 AND t.text LIKE ?"
-        " ORDER BY t.buchungsdatum LIMIT 1", (mandant_id, f"%{marke}%")).fetchone()
-    return dict(r) if r else None
+        " ORDER BY t.buchungsdatum, t.id", (mandant_id, f"%{marke}%")).fetchall()
+    if not rows:
+        return None
+    soll = angemeldete_zahllast(con, mandant_id, z)
+    if soll is None:
+        soll = (zahllast_buch if zahllast_buch is not None
+                else kennzahlen(con, mandant_id, z)["steuern"]["83"])
+    bezahlt, gedeckt_am = 0, None
+    for r in rows:
+        bezahlt -= r["betrag_cent"]
+        if gedeckt_am is None and bezahlt >= soll:
+            gedeckt_am = r["buchungsdatum"]
+    return {
+        "buchungsdatum": gedeckt_am,
+        "erste_zahlung_am": rows[0]["buchungsdatum"],
+        "betrag_cent": -bezahlt,                 # Bank-Konvention: Abgang negativ
+        "text": rows[0]["text"],
+        "bezahlt_cent": bezahlt,
+        "zahllast_cent": soll,
+        "offen_cent": max(soll - bezahlt, 0),
+        "gedeckt": gedeckt_am is not None,
+        "transaktionen": [r["id"] for r in rows],
+    }
 
 
 def eingabeblatt(con: sqlite3.Connection, mandant_id: int, z: Zeitraum,

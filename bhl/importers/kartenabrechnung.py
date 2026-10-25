@@ -46,6 +46,8 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 
+from ..db import eur as _eur
+
 ARTEN = ("saldo_alt", "umsatz", "entgelt", "saldo_neu")
 RE_BETRAG = re.compile(r"^([+-]?)(\d{1,3}(?:\.\d{3})*|\d+),(\d{2})$")
 RE_DATUM = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -127,6 +129,18 @@ def pruefe(a: Abrechnung) -> tuple[bool, int]:
     return soll == a.saldo_neu, a.saldo_neu - soll
 
 
+def _reihenfolge(nummer: str) -> tuple:
+    """Sortierschluessel einer Abrechnungsnummer: Ziffernfolgen als Zahl.
+
+    Als Text sortiert stuende '10' vor '9', und die Saldenkette verglaeche die
+    falschen Nachbarn - eine Luecke wuerde gemeldet, wo keine ist, und eine
+    echte verdeckt. Nummern mit Buchstaben ('A9', '2025-10') werden natuerlich
+    sortiert: Text bleibt Text, jede Ziffernfolge zaehlt als Zahl.
+    """
+    return tuple((0, int(teil), "") if teil.isdigit() else (1, 0, teil)
+                 for teil in re.findall(r"\d+|\D+", nummer.strip()))
+
+
 def luecken(abrechnungen: list[Abrechnung]) -> list[str]:
     """Brueche in der Saldenkette je Konto - eine fehlende Abrechnung."""
     aus = []
@@ -134,7 +148,7 @@ def luecken(abrechnungen: list[Abrechnung]) -> list[str]:
     for a in abrechnungen:
         je_konto.setdefault(a.konto, []).append(a)
     for reihe in je_konto.values():
-        reihe.sort(key=lambda a: a.nummer)
+        reihe.sort(key=lambda a: _reihenfolge(a.nummer))
         for vor, nach in zip(reihe, reihe[1:]):
             if vor.saldo_neu != nach.saldo_alt:
                 aus.append(f"zwischen Abrechnung {vor.nummer} und {nach.nummer} "
@@ -142,15 +156,42 @@ def luecken(abrechnungen: list[Abrechnung]) -> list[str]:
     return aus
 
 
+def _bearbeitet(con: sqlite3.Connection, mandant_id: int, t: sqlite3.Row) -> str | None:
+    """Ist der Umsatz schon verarbeitet? Rueckgabe: warum, sonst None.
+
+    Gebucht heisst: verknuepft (`buchung_id`) - oder eine Buchung traegt ihn
+    schon im Belegfeld ('KA<id>'), auch wenn `bh link` noch nicht lief.
+    """
+    if t["buchung_id"] is not None:
+        return f"mit Buchung {t['buchung_id']} verknuepft"
+    b = con.execute(
+        "SELECT b.id FROM buchung b JOIN geschaeftsjahr g ON g.id = b.gj_id"
+        " WHERE g.mandant_id=? AND b.belegfeld=? LIMIT 1",
+        (mandant_id, f"KA{t['id']}")).fetchone()
+    if b:
+        return f"in Buchung {b['id']} gebucht (Belegfeld KA{t['id']})"
+    if t["nicht_gebucht_grund"]:
+        return "als nicht zu buchen erklaert"
+    return None
+
+
 def importieren(con: sqlite3.Connection, mandant_id: int, pfad: str, jahr: int) -> dict:
     """Umsaetze eines Kalenderjahres uebernehmen; Jahr 0 = alle.
 
     Wiederholbar: Was an derselben Fundstelle schon steht, wird nicht
     verdoppelt. Weicht der Inhalt ab - ein berichtigter Lesefehler -, wird die
-    Zeile fortgeschrieben und gezaehlt.
+    Zeile fortgeschrieben und gezaehlt (`berichtigt`, Einzelheiten in
+    `berichtigte`).
+
+    Betrag und Buchungstag eines Umsatzes, der schon gebucht oder bewusst als
+    nicht zu buchen erklaert ist, werden nicht still ueberschrieben: die Buchung
+    stuende sonst auf einem Betrag, den der Kontoumsatz nicht mehr traegt. Die
+    Zeile wird abgelehnt (`abgelehnt`, mit Fundstelle, altem und neuem Betrag),
+    damit ein Mensch bewusst umbucht. Text und Rohdaten duerfen sich aendern.
     """
     z = {"neu": 0, "vorhanden": 0, "berichtigt": 0, "abrechnungen": 0,
-         "unbekannt": [], "differenz": [], "luecken": []}
+         "unbekannt": [], "differenz": [], "luecken": [], "berichtigte": [],
+         "abgelehnt": []}
     abrechnungen = lies(pfad)
     z["luecken"] = luecken(abrechnungen)
     konten = {r["iban"]: r["id"] for r in con.execute(
@@ -170,7 +211,8 @@ def importieren(con: sqlite3.Connection, mandant_id: int, pfad: str, jahr: int) 
                 continue
             roh = json.dumps(u.zusatz, ensure_ascii=False, sort_keys=True)
             alt = con.execute(
-                "SELECT id, buchungsdatum, betrag_cent, text, rohdaten FROM banktransaktion"
+                "SELECT id, buchungsdatum, betrag_cent, text, rohdaten, buchung_id,"
+                " nicht_gebucht_grund FROM banktransaktion"
                 " WHERE bankkonto_id=? AND hash=?", (konten[a.konto], u.hash)).fetchone()
             if alt is None:
                 con.execute(
@@ -181,6 +223,23 @@ def importieren(con: sqlite3.Connection, mandant_id: int, pfad: str, jahr: int) 
                 z["neu"] += 1
             elif (alt["buchungsdatum"], alt["betrag_cent"], alt["text"], alt["rohdaten"]) != (
                     u.buchungsdatum, u.betrag_cent, u.text, roh):
+                fundstelle = (f"Abrechnung {a.nummer}, Seite {u.seite or '-'},"
+                              f" Zeile {u.zeile or '-'} ({u.art})")
+                kern_geaendert = ((alt["buchungsdatum"], alt["betrag_cent"])
+                                  != (u.buchungsdatum, u.betrag_cent))
+                bearbeitet = _bearbeitet(con, mandant_id, alt)
+                if kern_geaendert and bearbeitet:
+                    z["abgelehnt"].append(
+                        f"{fundstelle}: Umsatz {alt['id']} ist {bearbeitet} - Betrag/Buchungstag"
+                        f" nicht ueberschrieben (bisher {_eur(alt['betrag_cent'])} am"
+                        f" {alt['buchungsdatum']}, neu {_eur(u.betrag_cent)} am"
+                        f" {u.buchungsdatum}). Buchung bewusst berichtigen, dann neu einlesen.")
+                    continue
+                z["berichtigte"].append(
+                    f"{fundstelle}: Umsatz {alt['id']}"
+                    + (f" {_eur(alt['betrag_cent'])} am {alt['buchungsdatum']} ->"
+                       f" {_eur(u.betrag_cent)} am {u.buchungsdatum}" if kern_geaendert
+                       else " Text/Zusatzangaben"))
                 con.execute(
                     "UPDATE banktransaktion SET buchungsdatum=?, betrag_cent=?, text=?,"
                     " rohdaten=? WHERE id=?",
