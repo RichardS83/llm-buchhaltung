@@ -15,6 +15,10 @@ Zwei Quellen, die sich ergaenzen:
   JSON-Datei kommt dazu nur die Anmerkung: wo der Beleg zu holen ist
   (`beschaffung`) oder warum keiner noetig ist (`unkritisch`).
 
+Ein Punkt kann ausserdem sagen, wer handeln muss (`wer`), was zu tun ist
+(`aktion`) und welche Abgaben auf ihn warten (`blockiert`). Daraus baut
+`bhl/aufgaben.py` die Seite *Deine Aufgaben*.
+
 Die Trennung ist der ganze Punkt. Am 25.07.2026 stand die groesste Luecke des
 Abschlusses - die fehlenden Umsaetze eines Kartenkontos - nur in einer Markdown-Datei,
 die niemand oeffnet, waehrend die Oberflaeche einen abgeschlossenen Abschluss

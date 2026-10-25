@@ -36,6 +36,12 @@ out/
 .env.*
 *.pem
 *.key
+*.pfx
+*.p12
+
+# ERiC (docs/eric.md): das SDK der Finanzverwaltung darf nicht ins Repository
+ERiC-*/
+eric-sdk/
 
 # Python
 __pycache__/
@@ -54,3 +60,6 @@ build/
 .idea/
 .vscode/
 *.swp
+
+# Persönliche Entscheidungsvorlagen zu echten Mandanten (Steuer-Desk)
+entscheidungen/

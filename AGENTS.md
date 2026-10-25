@@ -52,7 +52,7 @@ betrieblichen Daten besteht.
 ## Die Schleife
 
 ```bash
-./bh import-bank <m> <jahr> 'pfad/Kontoauszug_*.pdf'   # oder import-qonto / import-stripe
+./bh import-bank <m> <jahr> 'pfad/Kontoauszug_*.pdf'   # oder import-qonto / import-stripe / import-karte
 ./bh beleg scan  <m> /pfad/zum/ordner --jahr <jahr>
 ./bh umsaetze    <m> <jahr> --offen                    # deine Arbeitsliste
 #   ... kontieren: buchungen.csv schreiben ...

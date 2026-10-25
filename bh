@@ -18,6 +18,7 @@ Aufrufe:
   bh init <mandant> <jahr>                 Mandant + Geschaeftsjahr + Kontenplan anlegen
   bh eb <mandant> <jahr> <eb.csv>          Eroeffnungsbilanzwerte buchen
   bh import-bank <mandant> <jahr> <pdf...> Commerzbank-Kontoauszuege einlesen
+  bh import-karte <mandant> <jahr> <csv>   erfasste Kreditkartenabrechnungen; Jahr 0 = alle
   bh umsaetze <mandant> <jahr> [--offen] [--suche W] [--ab-betrag N]
                                            importierte Bankumsaetze; Jahr 0 = alle
   bh buchen <mandant> <jahr> <buchungen.csv>
@@ -29,6 +30,13 @@ Aufrufe:
   bh report <mandant> <jahr> <was>         saldenliste|bilanz|guv|journal|belege|anlagen
   bh konto <mandant> <jahr> <kontonummer>
   bh serve <mandant> <jahr> [--port]       Web-Oberflaeche starten
+  bh eric einrichten [<mandant>]           ERiC-SDK einbinden, Zertifikat prüfen
+  bh eric postfach <mandant>               Postfach von Mein ELSTER abholen
+  bh eric pruefen|test|senden <mandant> <jahr> ustva|zm --quartal N
+  bh eric pruefen|test|senden <mandant> <jahr> ebilanz|eroeffnung|kst|gewst
+        pruefen ... --vorlegen GRUND [--aenderung 'was|bisher|neu' ...]
+                                           geprüften Datensatz zur Freigabe vorlegen
+                                           UStVA/ZM/E-Bilanz prüfen, testsenden, abgeben
   bh pruefen <mandant> <jahr>              Buchfuehrung auf Regelverstoesse pruefen
   bh abgabe <mandant> <jahr>               Darf die Erklaerung abgegeben werden?
   bh reset <mandant> <jahr>                alle Buchungen des Jahres loeschen
@@ -137,6 +145,11 @@ def cmd_init(a):
                     " konto_id, nur_archiv) VALUES (?,?,?,?,?)",
                     (mid, b["iban"], b["bezeichnung"], ledger.konto_id(con, mid, b["konto"]),
                      1 if b.get("nur_archiv") else 0))
+        # Ein geänderter Eintrag (Sachkonto, Bezeichnung, Archivkennzeichen) wird fortgeschrieben – sonst bliebe ein
+        # Konto, das vom Archiv in die Buchführung wechselt, stillschweigend außerhalb der Bankprüfung.
+        con.execute("UPDATE bankkonto SET bezeichnung=?, konto_id=?, nur_archiv=? WHERE mandant_id=? AND iban=?",
+                    (b["bezeichnung"], ledger.konto_id(con, mid, b["konto"]), 1 if b.get("nur_archiv") else 0,
+                     mid, b["iban"]))
     con.commit()
     print(f"Mandant {cfg['name']} (id {mid}), Geschaeftsjahr {a.jahr}, Kontenrahmen "
           f"{rahmen.name} mit {len(rahmen.konten)} Konten, {len(bank)} Bankkonten.")
@@ -180,6 +193,24 @@ def cmd_import_bank(a):
               f"Kontrollrechnung {'OK' if ok else 'DIFFERENZ ' + db.eur(diff)}")
     con.commit()
     print(f"Gesamt: {ges_neu} neue Umsaetze, {ges_dopp} Dubletten.")
+
+
+def cmd_import_karte(a):
+    from bhl.importers import kartenabrechnung as karte
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    z = karte.importieren(con, m["id"], a.datei, a.jahr)
+    con.commit()
+    for k in z["unbekannt"]:
+        print(f"  ! Kartenkonto {k} steht nicht in mandant.json - uebersprungen")
+    for nummer, diff in z["differenz"]:
+        print(f"  ! Abrechnung {nummer} geht nicht auf (Differenz {db.eur(diff)}) - nicht eingelesen")
+    for l in z["luecken"]:
+        print(f"  ! {l}")
+    print(f"{z['abrechnungen']} Abrechnungen, Kontrollrechnung OK: {z['neu']} neue Umsaetze, "
+          f"{z['vorhanden']} bereits vorhanden, {z['berichtigt']} berichtigt.")
+    if z["unbekannt"] or z["differenz"] or z["luecken"]:
+        sys.exit(1)
 
 
 def cmd_import_qonto(a):
@@ -390,11 +421,44 @@ def cmd_abgabe(a):
         if b["schwere"] == "fehler":
             print(f"  FEHLER       {b['text']}")
 
+    # Offene Entscheidungen, an denen die Erklaerung haengt. Ein Punkt in
+    # offene_punkte.json mit `blockiert: [...]` sperrt genauso wie ein
+    # Platzhalter: die Zahl steht, aber ob sie so in die Erklaerung gehoert,
+    # ist nicht entschieden. Dazu Formularzeilen der Ausfuellhilfe, die an
+    # einem offenen Punkt haengen, und Gegenproben, die nicht aufgehen.
+    from bhl import elster as _elster
+    from bhl import offen as _offen
+    arten = {art, "gewerbesteuer"} if art == "koerperschaftsteuer" else {art}
+    haengt = []
+    for p in _offen.laden(jd).get("punkte", []):
+        if (set(p.get("blockiert") or []) & arten
+                and p.get("status") not in ("behoben", "erledigt", "entschieden")):
+            haengt.append(p)
+            print(f"  ENTSCHEIDUNG {p['id']}  {p['titel']}")
+            if p.get("aktion"):
+                print(f"               zu tun: {p['aktion']}")
+            print()
+    stamm = dict(m)
+    mpfad = os.path.join(mandant_dir(m["kuerzel"]), "mandant.json")
+    if os.path.exists(mpfad):
+        with open(mpfad, encoding="utf-8") as fh:
+            stamm.update(json.load(fh))
+    gjrow = con.execute("SELECT beginn, ende FROM geschaeftsjahr WHERE id=?", (g,)).fetchone()
+    el = _elster.auswerten(con, g, stamm, jd, {"beginn": gjrow[0], "ende": gjrow[1]})
+    gp_fehler = [p for p in (el or {}).get("gegenproben", []) if not p["ok"]]
+    for p in gp_fehler:
+        print(f"  GEGENPROBE   {p['text']}: {db.eur(p['ist'] or 0)} gegen {db.eur(p['soll'] or 0)}")
+
     abw = spec.get("abweichungen", 0)
-    gesperrt = bool(offen) or d["fehler"] or abw
+    gesperrt = bool(offen) or d["fehler"] or abw or bool(haengt) or bool(gp_fehler)
     print()
     if gesperrt:
         teile = []
+        if haengt:
+            teile.append(f"{len(haengt)} offene Entscheidung{'en' if len(haengt) > 1 else ''}"
+                         f" ({', '.join(p['id'] for p in haengt)})")
+        if gp_fehler:
+            teile.append(f"{len(gp_fehler)} Gegenprobe(n) der Ausfüllhilfe")
         if offen:
             teile.append(f"{len(offen)} Platzhalter")
         if abw:
@@ -436,6 +500,199 @@ def cmd_ustva(a):
     for z in zeitraeume:
         print(ust.eingabeblatt(con, m["id"], z, mandant_dir(a.mandant)))
         print()
+
+
+def pruefergebnis(r):
+    from bhl import eric
+    if r.code == eric.HINWEISE:
+        print("OK  Datensatz plausibel, mit Hinweisen.")
+    else:
+        print(("OK  " if r.ok else "FEHLER  ") + r.text)
+    for t in r.fehler:
+        print(f"  ! {t}")
+    for t in r.hinweise:
+        print(f"  Hinweis: {t}")
+
+
+def cmd_eric(a):
+    """ELSTER-Übermittlung über ERiC - Einrichtung und Ablauf in docs/eric.md."""
+    from bhl import eric, eric_ansicht, zugang
+    from bhl import eric_vorgang as ev
+    from bhl import umsatzsteuer as ust
+    try:
+        e = ev.Einstellung.laden()
+    except ev.VorgangFehler as f:
+        sys.exit(str(f))
+    sdk = os.path.dirname(os.path.abspath(e.bibliothek))
+
+    def versionsprobe(er):
+        v = er.version()
+        jetzt, naechste = eric.mindestversion()
+        haupt = int(v.split(".")[0]) if v[:2].isdigit() else 0
+        print(f"ERiC {v} ({e.bibliothek})")
+        if haupt and haupt < jetzt:
+            print(f"  ! Mindestversion ist ERiC {jetzt} - mit {haupt} nimmt ELSTER nichts "
+                  f"mehr an. Neues SDK im Entwicklerbereich laden.")
+        elif haupt and haupt < naechste:
+            print(f"  Hinweis: ab Ende April gilt voraussichtlich ERiC {naechste} als "
+                  f"Mindestversion.")
+
+    if a.aktion == "einrichten":
+        try:
+            plugins = eric.einrichten(e.bibliothek)
+        except eric.EricFehler as f:
+            sys.exit(str(f))
+        print(f"{len(plugins)} Plugins verlinkt nach {os.path.join(sdk, eric.PLUGIN_VERZEICHNIS)}.")
+        if not eric.hinweise_bestaetigt(e.bibliothek):
+            print()
+            print(eric.DATENSCHUTZHINWEIS)
+            print()
+            print(eric.PROTOKOLLHINWEIS)
+            print()
+            print("Das Informationsschreiben der Finanzverwaltung zur DSGVO (Art. 12-14) steht")
+            print(f"als Anhang 2 in {os.path.join(sdk, 'lizenz.pdf')}.")
+            if not sys.stdin.isatty():
+                sys.exit("Die Kenntnisnahme bestätigt ein Mensch: bh eric einrichten in einem "
+                         "Terminal ausführen.")
+            if input("Zur Kenntnis genommen? [ja/nein] ").strip().lower() != "ja":
+                sys.exit("Nicht bestätigt - ERiC bleibt gesperrt.")
+            eric.hinweise_bestaetigen(e.bibliothek)
+        with eric.Eric(e.bibliothek, os.path.join(sdk, eric.PLUGIN_VERZEICHNIS, "protokoll")) as er:
+            versionsprobe(er)
+            if a.mandant:
+                stamm = ev.stammdaten(mandant_dir(a.mandant))
+                pfad = (stamm.get("elster") or {}).get("zertifikat")
+                if not pfad:
+                    sys.exit('mandant.json: "elster": {"zertifikat": "<pfad.pfx>"} fehlt.')
+                try:
+                    z = er.zertifikat(pfad, zugang.eric_pin(a.mandant))
+                except (eric.EricFehler, zugang.ZugangFehlt) as f:
+                    sys.exit(f"Zertifikat {pfad}: {f}")
+                bis = z["gueltig_bis"] or "?"
+                if bis.count("-") == 2:
+                    bis = ".".join(reversed(bis.split("-")))
+                print(f"Zertifikat {os.path.basename(pfad)}: PIN stimmt, gültig bis {bis}.")
+        return
+
+    if a.aktion == "postfach":
+        from bhl import eric_postfach as ep
+        if not a.mandant:
+            sys.exit("bh eric postfach <mandant>")
+        md = mandant_dir(a.mandant)
+        try:
+            r = ep.abrufen(a.mandant, md, e)
+        except (ep.PostfachFehler, eric.EricFehler) as f:
+            sys.exit(str(f))
+        for s_ in r.status:
+            print(f"  {s_['datenart']:<24} {s_['anzahl']:>4}")
+        print(f"{len(r.neu)} neu abgeholt, {len(r.vorhanden)} schon vorhanden.")
+        for i, b in r.bestaetigt.items():
+            print(f"  bestätigt {i}: {b['code']} {b['text']}")
+        print("  ansehen: bh serve, Seite ELSTER-Postfach")
+        return
+
+    if not (a.mandant and a.jahr and a.art):
+        sys.exit("bh eric pruefen|test|senden <mandant> <jahr> ustva|zm --quartal N "
+                 "| ebilanz | eroeffnung | kst | gewst")
+    if not eric.hinweise_bestaetigt(e.bibliothek):
+        sys.exit("Zuerst: bh eric einrichten (Datenschutzhinweise nach der ERiC-Lizenz).")
+    con = db.connect(DB)
+    m = lade_mandant(con, a.mandant)
+    if a.art in ev.JAHRESARTEN:
+        # Die E-Bilanz gilt dem ganzen Wirtschaftsjahr, auch einem Rumpfjahr;
+        # KSt und GewSt dem Veranlagungszeitraum, in dem es endet
+        try:
+            z = ev.zeitraum(con, m["id"], a.jahr, ev.ZEITRAUM[a.art])
+        except ev.VorgangFehler as f:
+            sys.exit(str(f))
+    elif not (a.quartal or a.monat):
+        sys.exit("--quartal oder --monat angeben.")
+    else:
+        z = ust.Zeitraum(a.jahr, quartal=a.quartal, monat=a.monat)
+    md = mandant_dir(a.mandant)
+
+    if (a.vorlegen or a.aenderung) and a.aktion != "pruefen":
+        sys.exit("--vorlegen gilt nur für bh eric pruefen.")
+    try:
+        aenderungen = [ev.aenderung(t) for t in a.aenderung]
+    except ev.VorgangFehler as f:
+        sys.exit(str(f))
+    if (a.aenderung or a.pruefpunkt) and not a.vorlegen:
+        sys.exit("--aenderung und --pruefpunkt nur zusammen mit --vorlegen.")
+
+    if a.aktion == "senden" and not sys.stdin.isatty():
+        sys.exit("Die Abgabe gibt ein Mensch frei: bh eric senden in einem Terminal oder "
+                 "über bh serve. Zum Probieren: bh eric test.")
+
+    def zeigen(ds, vp):
+        print(f"{ev.TITEL[a.art]} {z.bezeichnung}" + (" - berichtigt" if a.berichtigt else ""))
+        for name, wert in ds.zeilen:
+            print(f"  {name:<14} {wert:>14}")
+        if vp:
+            print("\nPlausibilitätsprüfung vor dem Senden:")
+            pruefergebnis(vp)
+
+    def freigabe(ds, vp, pruefung):
+        zeigen(ds, vp)
+        print()
+        if pruefung and pruefung["datensatz"]["sha256"] == ev.sha256(ds.xml):
+            print(f"Datensatz identisch mit der Prüfung vom "
+                  f"{pruefung['zeit'][:16].replace('T', ' ')} "
+                  f"(SHA-256 {pruefung['datensatz']['sha256'][:12]}…).")
+        elif pruefung:
+            print(f"  ! Datensatz weicht von der Prüfung vom "
+                  f"{pruefung['zeit'][:16].replace('T', ' ')} ab - seitdem hat sich die "
+                  f"Buchführung oder das Erstellungsdatum geändert.")
+        print("Das ist die Abgabe an die Finanzverwaltung - ohne Testmerker.")
+        if vp.hinweise:
+            print(f"Es gibt {len(vp.hinweise)} Hinweis(e) - bitte oben lesen.")
+        betrag = ev.betrag_text(ds.betrag_cent)
+        was = ev.FREIGABE.get(a.art, "Betrag")
+        if input(f"Zur Freigabe {was} eingeben ({betrag}): ").strip() != betrag:
+            raise ev.VorgangFehler("Nicht freigegeben - nichts gesendet.")
+
+    with eric.Eric(e.bibliothek, ev.protokoll(md)) as er:
+        versionsprobe(er)
+    try:
+        v = ev.durchfuehren(con, m["id"], a.mandant, md, z, a.art, a.aktion, e,
+                            berichtigt=a.berichtigt, testzertifikat=a.testzertifikat,
+                            freigabe=freigabe)
+    except ev.VorgangFehler as f:
+        lauf = getattr(f, "lauf", None)
+        if lauf:
+            zeigen(lauf.datensatz, None)
+            print("\nPlausibilitätsprüfung vor dem Senden:")
+            vp_datei = lauf.dateien.get("vorpruefung")
+            if vp_datei:
+                for mld in eric_ansicht.meldungen(open(vp_datei, encoding="utf-8").read()):
+                    print(f"  {'!' if mld['art'] == 'fehler' else 'Hinweis:'} {mld['text']}"
+                          + (f" (Feld {mld['feld']})" if mld["feld"] else ""))
+            print(f"  abgelegt in {os.path.relpath(lauf.ordner, WURZEL)}")
+        sys.exit(str(f))
+
+    if a.aktion != "senden":
+        zeigen(v.datensatz, v.vorpruefung)
+    r = v.lauf.ergebnis
+    print()
+    if a.aktion != "pruefen":
+        print("Übermittlung:")
+    pruefergebnis(r)
+    if r.transferticket:
+        print(f"  Transferticket {r.transferticket}")
+    print(f"  abgelegt in {os.path.relpath(v.lauf.ordner, WURZEL)}")
+    if a.vorlegen and r.ok:
+        ev.vorschlagen(v.lauf.ordner, a.vorlegen, aenderungen, von=a.von,
+                       pruefpunkte=a.pruefpunkt)
+        print(f"  zur Freigabe vorgelegt ({len(aenderungen)} Änderung(en)) — "
+              f"bh serve, ELSTER-Übermittlungen, „Zur Freigabe“")
+    elif a.vorlegen:
+        print("  nicht vorgelegt: die Prüfung hat Fehler")
+    print("  ansehen: bh serve, Seite ELSTER-Übermittlungen")
+    if v.festgehalten:
+        datei = "fristen.csv" if a.art in ev.JAHRESARTEN else "voranmeldungen.csv"
+        print(f"  festgehalten in {os.path.relpath(os.path.join(md, datei), WURZEL)}")
+    if not r.ok:
+        sys.exit(1)
 
 
 def cmd_link(a):
@@ -559,6 +816,9 @@ def main():
     s = sub.add_parser("import-bank"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
     s.add_argument("dateien", nargs="+"); s.set_defaults(f=cmd_import_bank)
 
+    s = sub.add_parser("import-karte"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
+    s.add_argument("datei"); s.set_defaults(f=cmd_import_karte)
+
     s = sub.add_parser("import-qonto"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
     s.add_argument("--ohne-belege", action="store_true",
                    help="nur Umsaetze holen, keine Anhaenge herunterladen")
@@ -603,6 +863,25 @@ def main():
     s = sub.add_parser("ustva"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
     s.add_argument("--quartal", type=int, choices=[1, 2, 3, 4])
     s.set_defaults(f=cmd_ustva)
+
+    s = sub.add_parser("eric", help="ELSTER-Übermittlung über ERiC (docs/eric.md)")
+    s.add_argument("aktion", choices=["einrichten", "pruefen", "test", "senden", "postfach"])
+    s.add_argument("mandant", nargs="?"); s.add_argument("jahr", type=int, nargs="?")
+    s.add_argument("art", nargs="?", choices=["ustva", "zm", "ebilanz", "eroeffnung", "kst",
+                                              "gewst"])
+    s.add_argument("--quartal", type=int, choices=[1, 2, 3, 4])
+    s.add_argument("--monat", type=int, choices=range(1, 13))
+    s.add_argument("--berichtigt", action="store_true", help="berichtigte Anmeldung (Kz 10)")
+    s.add_argument("--testzertifikat", action="store_true",
+                   help="bei test: das Testzertifikat des SDK statt des eigenen")
+    s.add_argument("--vorlegen", metavar="GRUND",
+                   help="bei pruefen: die Prüfung zur Freigabe vorlegen, mit Grund")
+    s.add_argument("--aenderung", action="append", default=[], metavar="WAS|BISHER|NEU",
+                   help="bei --vorlegen: was sich gegenüber dem Finanzamt ändert (mehrfach)")
+    s.add_argument("--von", default="Claude", help="bei --vorlegen: wer vorlegt")
+    s.add_argument("--pruefpunkt", action="append", default=[], metavar="TEXT",
+                   help="bei --vorlegen: was vor dem Vorlegen geprüft wurde (mehrfach)")
+    s.set_defaults(f=cmd_eric)
 
     s = sub.add_parser("link"); s.add_argument("mandant"); s.add_argument("jahr", type=int)
     s.set_defaults(f=cmd_link)

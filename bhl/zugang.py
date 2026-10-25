@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2025-2026 RichardS83
-"""Zugangsdaten für die Schnittstellen von Qonto und Stripe.
+"""Zugangsdaten für die Schnittstellen von Qonto, Stripe und ERiC.
 
 Gelesen wird aus dem Schlüsselbund von macOS, ersatzweise aus der Umgebung.
 Bewusst dieselben Schlüsselbund-Einträge, die schon das frühere UStVA-Werkzeug
@@ -20,6 +20,11 @@ SCHLUESSELBUND = {
     "QONTO_LOGIN": "ustva-qonto-login",
     "QONTO_SECRET_KEY": "ustva-qonto-secret",
     "QONTO_ACCESS_TOKEN": "ustva-qonto-token",
+    # ERiC (docs/eric.md): Pfad zum lib-Verzeichnis des SDK, die eigene
+    # Hersteller-ID und die PIN des ELSTER-Zertifikats.
+    "ERIC_PFAD": "bh-eric-pfad",
+    "ERIC_HERSTELLER_ID": "bh-eric-hersteller-id",
+    "ERIC_PIN": "bh-eric-pin",
 }
 
 
@@ -61,3 +66,11 @@ def qonto_kopf() -> dict[str, str]:
 
 def stripe_kopf() -> dict[str, str]:
     return {"Authorization": f"Bearer {hole('STRIPE_API_KEY')}"}
+
+
+def eric_pin(kuerzel: str) -> str:
+    """PIN des Zertifikats eines Mandanten: `bh-eric-pin-<kürzel>`, sonst
+    `bh-eric-pin`. Zwei Gesellschaften haben meist zwei ELSTER-Konten."""
+    name = f"ERIC_PIN_{kuerzel.upper()}"
+    SCHLUESSELBUND.setdefault(name, f"bh-eric-pin-{kuerzel}")
+    return hole(name, pflicht=False) or hole("ERIC_PIN")
