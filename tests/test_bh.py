@@ -206,6 +206,115 @@ class Einkommensteuer(unittest.TestCase):
         self.assertEqual(a.split()[-1], p.split()[-1])
 
 
+class Kartenabrechnung(unittest.TestCase):
+    """Erfasste Kreditkartenabrechnungen: eingelesen wird nur, was aufgeht."""
+
+    KOPF = ("konto;abrechnung;seite;zeile;art;kaufdatum;buchungsdatum;betrag;text;"
+            "waehrung;fremdbetrag;kurs;quelle\n")
+    KONTO = "KARTE-0000"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.dbp = os.path.join(self.tmp, "privat.sqlite")
+        self.bh("init", "beispiel-privat", "2025")
+        con = db.connect(self.dbp)
+        con.execute("INSERT INTO bankkonto (mandant_id, iban, bezeichnung, konto_id, nur_archiv)"
+                    " SELECT m.id, ?, 'Kreditkarte', k.id, 1 FROM mandant m JOIN konto k"
+                    " ON k.mandant_id=m.id AND k.nummer='3900'", (self.KONTO,))
+        con.commit()
+        con.close()
+
+    def bh(self, *args, erwartet=0):
+        r = subprocess.run([sys.executable, os.path.join(WURZEL, "bh"), "--db", self.dbp, *args],
+                           capture_output=True, text=True, cwd=WURZEL)
+        self.assertEqual(r.returncode, erwartet,
+                         f"bh {' '.join(args)}\n{r.stdout}\n{r.stderr}")
+        return r.stdout
+
+    def csv(self, *zeilen):
+        pfad = os.path.join(self.tmp, "karte.csv")
+        with open(pfad, "w", encoding="utf-8") as fh:
+            fh.write(self.KOPF + "".join(f"{self.KONTO};{z}\n" for z in zeilen))
+        return pfad
+
+    def umsaetze(self):
+        con = db.connect(self.dbp)
+        rows = con.execute("SELECT buchungsdatum, betrag_cent, text FROM banktransaktion"
+                           " ORDER BY id").fetchall()
+        con.close()
+        return [tuple(r) for r in rows]
+
+    # Zwei gleiche Kaeufe am selben Tag, eine Gutschrift, ein Entgelt.
+    MAERZ = (
+        "20250310;;;saldo_alt;;2025-02-10;-100,00;Saldo;;;;",
+        "20250310;1;1;umsatz;2025-02-10;2025-02-11;100,00;Lastschrift;;;;",
+        "20250310;1;2;umsatz;2025-02-12;2025-02-13;-1,85;Baeckerei, Musterstadt;;;;",
+        "20250310;1;3;umsatz;2025-02-12;2025-02-13;-1,85;Baeckerei, Musterstadt;;;;",
+        "20250310;1;4;umsatz;2025-02-20;2025-02-21;-1.020,40;Reise, Beispielort;USD;1.100,00;1,0780;",
+        "20250310;1;4;entgelt;2025-02-20;2025-02-21;-19,90;Waehrungsumrechnung;;;;",
+        "20250310;2;1;umsatz;2025-03-01;2025-02-10;46,00;Baumarkt, Musterstadt;;;;",
+        "20250310;;;saldo_neu;;2025-03-10;-998,00;Neuer Saldo;;;;",
+    )
+
+    def test_betrag_ohne_gleitkomma(self):
+        from bhl.importers import kartenabrechnung as karte
+        self.assertEqual(karte.cent("-1.234,56"), -123456)
+        self.assertEqual(karte.cent("0,07"), 7)
+        self.assertEqual(karte.cent("20.000,00"), 2000000)
+        for falsch in ("1,5", "1.234.56", "12", "1,234.56"):
+            with self.assertRaises(ValueError):
+                karte.cent(falsch)
+
+    def test_gleiche_kaeufe_bleiben_zwei_umsaetze(self):
+        """Der Dublettenschutz haengt an der Fundstelle. Am Inhalt gemessen
+        waeren zwei Broetchenkaeufe am selben Tag einer - und der Saldo
+        der Abrechnung ginge im Bestand nicht mehr auf."""
+        aus = self.bh("import-karte", "beispiel-privat", "0", self.csv(*self.MAERZ))
+        self.assertIn("6 neue Umsaetze", aus)
+        u = self.umsaetze()
+        self.assertEqual(sum(1 for x in u if x[1] == -185), 2)
+        self.assertEqual(-10000 + sum(x[1] for x in u), -99800)
+
+    def test_wiederholter_import_haengt_nichts_an(self):
+        pfad = self.csv(*self.MAERZ)
+        self.bh("import-karte", "beispiel-privat", "0", pfad)
+        aus = self.bh("import-karte", "beispiel-privat", "0", pfad)
+        self.assertIn("0 neue Umsaetze, 6 bereits vorhanden, 0 berichtigt", aus)
+        self.assertEqual(len(self.umsaetze()), 6)
+
+    def test_berichtigter_lesefehler_wird_fortgeschrieben(self):
+        self.bh("import-karte", "beispiel-privat", "0", self.csv(*self.MAERZ))
+        besser = [z.replace("Baumarkt, Musterstadt", "Baumarkt 12, Musterstadt")
+                  for z in self.MAERZ]
+        aus = self.bh("import-karte", "beispiel-privat", "0", self.csv(*besser))
+        self.assertIn("0 neue Umsaetze, 5 bereits vorhanden, 1 berichtigt", aus)
+        self.assertEqual(len(self.umsaetze()), 6)
+        self.assertIn("Baumarkt 12, Musterstadt", [x[2] for x in self.umsaetze()])
+
+    def test_abrechnung_die_nicht_aufgeht_bleibt_draussen(self):
+        """Ein verlesener Betrag (1,85 statt 1,35) darf nicht im Bestand landen."""
+        falsch = list(self.MAERZ)
+        falsch[2] = falsch[2].replace("-1,85", "-1,35")
+        aus = self.bh("import-karte", "beispiel-privat", "0", self.csv(*falsch), erwartet=1)
+        self.assertIn("geht nicht auf", aus)
+        self.assertEqual(self.umsaetze(), [])
+
+    def test_fehlende_abrechnung_faellt_auf(self):
+        """Die Kette der Salden reisst, wenn ein Monat fehlt."""
+        mai = (
+            "20250512;;;saldo_alt;;2025-04-10;-40,00;Saldo;;;;",
+            "20250512;1;1;umsatz;2025-04-10;2025-04-11;40,00;Lastschrift;;;;",
+            "20250512;;;saldo_neu;;2025-05-12;0,00;Neuer Saldo;;;;",
+        )
+        aus = self.bh("import-karte", "beispiel-privat", "0",
+                      self.csv(*self.MAERZ, *mai), erwartet=1)
+        self.assertIn("zwischen Abrechnung 20250310 und 20250512 fehlt etwas", aus)
+
+    def test_jahr_filtert_nach_buchungstag(self):
+        aus = self.bh("import-karte", "beispiel-privat", "2024", self.csv(*self.MAERZ))
+        self.assertIn("0 neue Umsaetze", aus)
+
+
 class Abgabesperre(unittest.TestCase):
     """`bh abgabe` muss nein sagen koennen - sonst traegt die Arbeitsteilung nicht."""
 
@@ -240,6 +349,22 @@ class Abgabesperre(unittest.TestCase):
         r = self.abgabe("beispiel")
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn("FREI", r.stdout)
+
+    def test_offene_entscheidung_sperrt(self):
+        """Ein offener Punkt mit `blockiert` sperrt wie ein Platzhalter (03.10.2026)."""
+        pfad = os.path.join(WURZEL, "mandanten", "beispiel", "2025", "offene_punkte.json")
+        self.assertFalse(os.path.exists(pfad), "Testdatei darf nicht schon existieren")
+        with open(pfad, "w", encoding="utf-8") as fh:
+            json.dump({"punkte": [{"id": "Q1", "titel": "Steuerbilanz klären", "status": "offen",
+                                   "blockiert": ["koerperschaftsteuer"],
+                                   "aktion": "entscheiden"}]}, fh)
+        try:
+            r = self.abgabe("beispiel")
+        finally:
+            os.remove(pfad)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("ENTSCHEIDUNG Q1", r.stdout)
+        self.assertIn("GESPERRT", r.stdout)
 
 
 class Ueberleitung(unittest.TestCase):
@@ -337,6 +462,21 @@ class KeineEchtdaten(unittest.TestCase):
     ERLAUBT = ("DE02120300000000202051", "00/000/00000")
 
     def dateien(self):
+        # Geprueft wird, was veroeffentlicht wuerde: versioniert oder neu und
+        # nicht ignoriert. Was .gitignore ausschliesst, liegt nur lokal.
+        import subprocess
+        try:
+            liste = subprocess.run(
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                cwd=WURZEL, capture_output=True, text=True, check=True).stdout.split("\n")
+        except (OSError, subprocess.CalledProcessError):
+            liste = None
+        if liste is not None:
+            for rel in filter(None, liste):
+                if rel.endswith((".py", ".js", ".html", ".css", ".md", ".json",
+                                 ".csv", ".yml", ".yaml")) or rel == "bh":
+                    yield os.path.join(WURZEL, rel)
+            return
         for wurzel, dirs, namen in os.walk(WURZEL):
             dirs[:] = [d for d in dirs if d not in
                        ("__pycache__", ".git", ".venv", "out", "node_modules")]
@@ -381,6 +521,234 @@ class KeineEchtdaten(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Abgabepaket(unittest.TestCase):
+    """Fristen, Ausfuellhilfe, E-Bilanz und Aufgabenliste - mit erfundenen Zahlen.
+
+    Hinzugekommen am 03.10.2026, als die Anwendung den Jahresabschluss einer
+    UG vollstaendig abbilden sollte: Feststellung nach § 42a GmbHG,
+    Lohnsteuerbescheinigungen, ELSTER-Zeilen aus den Konten, Kontennachweis
+    der E-Bilanz und eine Liste dessen, was ein Mensch tun muss.
+    """
+
+    def setUp(self):
+        import datetime
+        self.tmp = tempfile.mkdtemp()
+        self.dbp = os.path.join(self.tmp, "probe.sqlite")
+        for args in (("init", "beispiel", "2025"),
+                     ("eb", "beispiel", "2025", "mandanten/beispiel/2025/eb.csv"),
+                     ("buchen", "beispiel", "2025", "mandanten/beispiel/2025/buchungen.csv")):
+            subprocess.run([sys.executable, os.path.join(WURZEL, "bh"), "--db", self.dbp, *args],
+                           capture_output=True, text=True, cwd=WURZEL, check=True)
+        self.con = db.connect(self.dbp)
+        self.gj = self.con.execute(
+            "SELECT g.id, g.beginn, g.ende FROM geschaeftsjahr g JOIN mandant m ON m.id = g.mandant_id"
+            " WHERE m.kuerzel = 'beispiel' AND g.jahr = 2025").fetchone()
+        self.heute = datetime.date(2026, 10, 3)
+        self.mdir = os.path.join(self.tmp, "m")
+        os.makedirs(os.path.join(self.mdir, "2025"))
+
+    def mandant(self, **fristen):
+        with open(os.path.join(self.mdir, "mandant.json"), "w", encoding="utf-8") as fh:
+            json.dump({"rechtsform": "UG (haftungsbeschränkt)", "fristen": fristen}, fh)
+
+    def test_feststellung_elf_monate_bei_kleiner_gmbh(self):
+        from bhl import fristen
+        self.mandant(groessenklasse="kleinst")
+        t = {e["art"]: e for e in fristen.jahrespflichten(self.mdir, 2025, "2025-12-31", self.heute)}
+        self.assertEqual(t["feststellung"]["faellig"], "2026-11-30")
+        self.mandant(groessenklasse="mittel")
+        t = {e["art"]: e for e in fristen.jahrespflichten(self.mdir, 2025, "2025-12-31", self.heute)}
+        self.assertEqual(t["feststellung"]["faellig"], "2026-08-31")
+        # Ausgeschrieben heisst die Rechtsform nicht "GmbH" - auch sie gehoert dazu.
+        self.assertTrue(fristen.ist_gmbh("Gesellschaft mit beschränkter Haftung"))
+        self.assertFalse(fristen.ist_gmbh("Aktiengesellschaft"))
+
+    def test_lohnsteuerbescheinigung_nur_bei_lohnzahlung(self):
+        from bhl import fristen
+        self.mandant()
+        ohne = fristen.jahrespflichten(self.mdir, 2027, "2027-12-31", self.heute)
+        self.assertNotIn("lohnsteuerbescheinigung", [e["art"] for e in ohne])
+        mit = {e["art"]: e for e in fristen.jahrespflichten(
+            self.mdir, 2027, "2027-12-31", self.heute, lohnzahlung=True)}
+        # 29.02.2028 ist ein Dienstag - Schaltjahr, kein Wochenende
+        self.assertEqual(mit["lohnsteuerbescheinigung"]["faellig"], "2028-02-29")
+
+    def test_ausfuellhilfe_rechnet_aus_den_konten(self):
+        from bhl import elster
+        spec = {"formulare": [{"id": "x", "titel": "X", "name": "X", "abgabe": "koerperschaftsteuer",
+                               "felder": [
+            {"id": "ertrag", "feld": "Ertrag", "wert": {"konten": ["4900"], "vorzeichen": -1}},
+            {"id": "aufwand", "feld": "Aufwand", "wert": {"konten": ["6825", "6855"]}},
+            {"id": "saldo", "feld": "Saldo", "wert": {"differenz": ["ertrag", "aufwand"]}},
+            {"id": "drittel", "feld": "Drittel", "wert": {"konten": ["4900"], "vorzeichen": -1},
+             "format": "cent"},
+            {"id": "fuenf", "feld": "5 %", "wert": {"prozent": ["ertrag", 5]}},
+            {"id": "teil", "feld": "anteilig", "wert": {"buchungen": {"konto": "6825"},
+                                                       "anteil": [1, 3]}, "format": "cent"},
+            {"feld": "haengt", "wert": {"text": "1 = Ja"}, "offen": "Q1"}]}],
+            "gegenproben": [{"feld": "aufwand", "konten": ["6825", "6855"], "text": "Aufwand"}]}
+        jd = os.path.join(self.mdir, "2025")
+        json.dump(spec, open(os.path.join(jd, "elster.json"), "w", encoding="utf-8"))
+        json.dump({"punkte": [{"id": "Q1", "titel": "offen", "status": "offen"}]},
+                  open(os.path.join(jd, "offene_punkte.json"), "w", encoding="utf-8"))
+        d = elster.auswerten(self.con, self.gj["id"], {}, jd,
+                             {"beginn": self.gj["beginn"], "ende": self.gj["ende"]})
+        f = {x.get("id") or x["feld"]: x for x in d["formulare"][0]["felder"]}
+        self.assertEqual(f["ertrag"]["betrag_cent"], 500000)
+        self.assertEqual(f["ertrag"]["eintrag"], 5000)
+        self.assertEqual(f["aufwand"]["betrag_cent"], 131000)
+        self.assertEqual(f["saldo"]["betrag_cent"], 369000)
+        self.assertEqual(f["fuenf"]["betrag_cent"], 25000)
+        self.assertEqual(f["teil"]["betrag_cent"], 39667)        # 1.190,00 / 3, gerundet
+        # Ein Feld, das an einem offenen Punkt haengt, macht das Formular unfertig.
+        self.assertEqual(f["haengt"]["offen_punkt"]["id"], "Q1")
+        self.assertFalse(d["formulare"][0]["bereit"])
+        self.assertTrue(d["gegenproben"][0]["ok"])
+        self.assertEqual(elster.euro(-29905178), -299052)
+        self.assertEqual(elster.euro(1050), 11)
+
+    def test_ebilanz_meldet_fehlende_zuordnung(self):
+        from bhl import ebilanz
+        from bhl.ledger import salden
+        konten = [r["nummer"] for r in salden(self.con, self.gj["id"]) if r["saldo"]]
+        zeilen = ["konto;element;bezeichnung;seite;quelle;hinweis"]
+        for n in konten:
+            typ = self.con.execute("SELECT typ FROM konto k JOIN mandant m ON m.id = k.mandant_id"
+                                   " WHERE m.kuerzel='beispiel' AND k.nummer=?", (n,)).fetchone()[0]
+            seite, el = (("bilanz", "bs.ass.x") if typ == "A" else ("bilanz", "bs.eqLiab.x")
+                         if typ == "P" else ("guv", "is.x"))
+            zeilen.append(f"{n};{el}.{n};Konto {n};{seite};FFL-2024;")
+        pfad = os.path.join(self.mdir, "ebilanz.csv")
+        open(pfad, "w", encoding="utf-8").write("\n".join(zeilen) + "\n")
+        d = ebilanz.auswerten(self.con, self.gj["id"], self.mdir)
+        self.assertTrue(d["vollstaendig"], d["pruefungen"])
+        # Ein Konto weglassen: die Zuordnung ist unvollstaendig.
+        open(pfad, "w", encoding="utf-8").write("\n".join(zeilen[:-1]) + "\n")
+        d = ebilanz.auswerten(self.con, self.gj["id"], self.mdir)
+        self.assertFalse(d["vollstaendig"])
+        self.assertEqual([k["nummer"] for k in d["fehlend"]], [konten[-1]])
+
+    def test_vor_jahresende_ist_nichts_bereit(self):
+        """Vor Jahresende stand der Jahresabschluss des laufenden Jahres als „bereit zum Absenden“ da -
+        weil für ihn keine Prüfung ein Hindernis fand. Das Jahr lief aber noch."""
+        import datetime
+        from bhl import abgaben
+        self.mandant(groessenklasse="kleinst")
+        gj = {"beginn": self.gj["beginn"], "ende": self.gj["ende"]}
+
+        def zustaende(heute):
+            d = abgaben.paket(self.con, self.gj["id"], {}, self.mdir,
+                              os.path.join(self.mdir, "2025"), 2025, gj, heute,
+                              kapitalgesellschaft=True, umsatzsteuerpflichtig=False,
+                              lohnzahlung=False)
+            return {a["art"]: a for a in d["abgaben"]}, d["zaehler"]
+
+        waehrend, zaehler = zustaende(datetime.date(2025, 12, 31))
+        self.assertEqual(waehrend["jahresabschluss"]["zustand"], "laeuft")
+        self.assertEqual(waehrend["jahresabschluss"]["hindernisse"][0]["art"], "zeitraum")
+        self.assertEqual(zaehler["bereit"], 0)
+        danach, _ = zustaende(datetime.date(2026, 1, 2))
+        self.assertEqual(danach["jahresabschluss"]["zustand"], "bereit")
+
+    def test_laufendes_jahr_ist_keine_aufgabe(self):
+        from bhl import aufgaben
+        paket = {"abgaben": [{"art": "jahresabschluss", "titel": "Jahresabschluss aufstellen 2026",
+                              "bezeichnung": "Jahresabschluss 2026", "frist": "2027-06-30",
+                              "tage": 251, "zustand": "laeuft",
+                              "hindernisse": [{"text": "Geschäftsjahr läuft noch bis 31.12.2026",
+                                               "art": "zeitraum"}],
+                              "weg": "intern", "empfaenger": "GF", "schritt": None}]}
+        d = aufgaben.sammeln(paket, {"punkte": [], "fehlende_belege": []}, {"eintraege": []},
+                             None, "2026-10-22", 2026)
+        self.assertEqual(d["aufgaben"], [])
+        self.assertEqual([a["titel"] for a in d["im_blick"]], ["Jahresabschluss aufstellen 2026"])
+
+    def test_lastschrift_ist_keine_aufgabe(self):
+        from bhl import aufgaben
+        t = {"art": "ustva_zahlung", "bezeichnung": "Umsatzsteuer-Zahllast Q3", "faellig": "2026-11-10",
+             "tage": 19, "status": "offen", "grundlage": "§ 18", "lastschrift": True}
+        d = aufgaben.sammeln(None, {"punkte": [], "fehlende_belege": []}, {"eintraege": [t]},
+                             None, "2026-10-22", 2026)
+        self.assertEqual(d["aufgaben"], [])
+        self.assertIn("Lastschrift", d["im_blick"][0]["aktion"])
+        # Frist verstrichen und nichts abgebucht: dann doch eine Aufgabe
+        d = aufgaben.sammeln(None, {"punkte": [], "fehlende_belege": []},
+                             {"eintraege": [{**t, "tage": -3, "status": "ueberfaellig"}]},
+                             None, "2026-11-13", 2026)
+        self.assertEqual(len(d["aufgaben"]), 1)
+        # Ein Zeitraum, der noch laeuft, ist ebenfalls keine Aufgabe
+        d = aufgaben.sammeln(None, {"punkte": [], "fehlende_belege": []},
+                             {"eintraege": [{**t, "lastschrift": False, "vorlaeufig": True}]},
+                             None, "2026-10-22", 2026)
+        self.assertEqual(d["aufgaben"], [])
+
+    def test_zahlung_aus_bank_erkannt(self):
+        from bhl import umsatzsteuer as ust
+        m = self.con.execute("SELECT id FROM mandant WHERE kuerzel='beispiel'").fetchone()["id"]
+        k = self.con.execute("INSERT INTO bankkonto (mandant_id, iban, bezeichnung) VALUES (?,?,?)",
+                             (m, "DE00TEST", "Test")).lastrowid
+        self.con.execute("INSERT INTO banktransaktion (bankkonto_id, buchungsdatum, betrag_cent,"
+                         " text, hash) VALUES (?,?,?,?,?)",
+                         (k, "2026-11-10", -13100, "Finanzamt | STEUERNR 1 UMS.ST 3VJ.26 131,00EUR",
+                          "h1"))
+        self.assertEqual(ust.zahlung_aus_bank(self.con, m, ust.Zeitraum(2026, quartal=3))
+                         ["buchungsdatum"], "2026-11-10")
+        self.assertIsNone(ust.zahlung_aus_bank(self.con, m, ust.Zeitraum(2026, quartal=2)))
+
+    def test_aufgabe_erbt_frist_der_blockierten_abgabe(self):
+        from bhl import aufgaben
+        paket = {"abgaben": [{"art": "koerperschaftsteuer", "titel": "KSt 2025",
+                              "bezeichnung": "Körperschaftsteuererklärung 2025",
+                              "frist": "2026-10-31", "tage": 28, "zustand": "blockiert",
+                              "hindernisse": [{"punkt": "Q1", "text": "x"}], "weg": "Mein ELSTER",
+                              "empfaenger": "Finanzamt", "schritt": None}]}
+        offene = {"punkte": [
+            {"id": "Q1", "titel": "Entscheiden", "status": "offen", "wer": "du",
+             "blockiert": ["koerperschaftsteuer"], "aktion": "entscheiden"},
+            {"id": "Q2", "titel": "Fonds liefern", "status": "offen", "wer": "extern"},
+            {"id": "Q3", "titel": "ohne Zuständigkeit", "status": "offen"},
+            {"id": "Q4", "titel": "erledigt", "status": "behoben", "wer": "du"}],
+            "fehlende_belege": []}
+        d = aufgaben.sammeln(paket, offene, {"eintraege": []}, None, "2026-10-03", 2025)
+        q1 = next(a for a in d["aufgaben"] if a.get("quelle") == "Q1")
+        self.assertEqual(q1["frist"], "2026-10-31")
+        self.assertTrue(q1["frist_geerbt"])
+        self.assertIn("Q3", [a.get("quelle") for a in d["aufgaben"]],
+                      "ein Punkt ohne `wer` gehoert auf die Aufgabenliste")
+        self.assertEqual([a["quelle"] for a in d["im_blick"]], ["Q2"])
+        self.assertNotIn("Q4", [a.get("quelle") for a in d["aufgaben"]])
+
+    def test_kommende_fristen_ausserhalb_des_pakets(self):
+        """Voranmeldung, ZM und Abgaben des Vorjahres stehen auf der Liste,
+        bevor sie ueberfaellig sind; was das Paket schon fuehrt, nicht doppelt."""
+        from bhl import aufgaben
+        paket = {"abgaben": [{"art": "ebilanz", "titel": "E-Bilanz 2026",
+                              "bezeichnung": "E-Bilanz 2026 übermitteln",
+                              "frist": "2027-08-02", "tage": 296, "zustand": "blockiert",
+                              "hindernisse": [], "weg": "ERiC", "empfaenger": "Finanzamt",
+                              "schritt": None}]}
+
+        def termin(bez, faellig, tage, status="offen"):
+            return {"art": "x", "bezeichnung": bez, "faellig": faellig, "tage": tage,
+                    "status": status,
+                    "grundlage": "§", "notiz": None, "verweis": None}
+        termine = {"eintraege": [
+            termin("Zusammenfassende Meldung 3. Kalendervierteljahr 2026", "2026-10-26", 16),
+            termin("E-Bilanz 2025 übermitteln", "2026-11-30", 51, "verlaengert"),
+            termin("Umsatzsteuer-Voranmeldung 2. Kalendervierteljahr 2026", "2026-08-10", -61,
+                   "erledigt"),
+            termin("E-Bilanz 2026 übermitteln", "2027-08-02", 296)]}
+        d = aufgaben.sammeln(paket, {"punkte": [], "fehlende_belege": []}, termine, None,
+                             "2026-10-10", 2026)
+        titel = [a["titel"] for a in d["aufgaben"]]
+        self.assertEqual(titel[:2], ["Zusammenfassende Meldung 3. Kalendervierteljahr 2026",
+                                     "E-Bilanz 2025 übermitteln"])
+        self.assertNotIn("E-Bilanz 2026 übermitteln", titel, "steht schon als Abgabe da")
+        self.assertNotIn("Umsatzsteuer-Voranmeldung 2. Kalendervierteljahr 2026", titel)
+        self.assertEqual(d["naechste_frist"], "2026-10-26")
+        self.assertEqual(d["zaehler"]["ueberfaellig"], 0)
 
 
 class Oberflaeche(unittest.TestCase):

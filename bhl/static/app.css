@@ -378,3 +378,147 @@ tr:hover > td > .hinweg { color: var(--akzent); }
 }
 #lizenz a { color: inherit; text-decoration: underline; }
 #lizenz a:hover { color: var(--fg); }
+
+/* ---------------------------------------------- Aufgaben, Abgaben, ELSTER */
+
+.nav-zahl.dringend { background: var(--minus); color: #fff; }
+.punkt .aktion { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+                 margin-top: 8px; padding: 8px 10px; border-radius: 6px;
+                 background: var(--warn-bg); font-size: 12.5px; }
+.punkt.markiert { box-shadow: 0 0 0 2px var(--akzent); }
+
+.aufgabe { background: var(--panel); border: 1px solid var(--linie); border-radius: 8px;
+           padding: 12px 16px; margin-bottom: 10px; border-left: 3px solid var(--linie-2);
+           display: grid; grid-template-columns: 112px 1fr; gap: 4px 16px; }
+.aufgabe.hoch { border-left-color: var(--minus); }
+.aufgabe.mittel { border-left-color: var(--warn); }
+.aufgabe.ueberfaellig { background: var(--warn-bg); }
+.aufgabe .wann { font-size: 12px; color: var(--fg-leise); }
+.aufgabe .wann strong { display: block; font-size: 13px; color: var(--fg); }
+.aufgabe .titel { font-weight: 600; font-size: 13.5px; }
+.aufgabe .titel a { color: inherit; text-decoration: none; }
+.aufgabe .titel a:hover { text-decoration: underline; }
+.aufgabe .tun { font-size: 13px; line-height: 1.55; margin-top: 4px; max-width: 86ch; }
+.aufgabe .neben { font-size: 11.5px; color: var(--fg-still); margin-top: 6px;
+                  display: flex; gap: 6px; flex-wrap: wrap; align-items: baseline; }
+.aufgabe ul.klein { margin: 6px 0 0; padding-left: 18px; }
+@media (max-width: 700px) { .aufgabe { grid-template-columns: 1fr; } }
+
+.abgabe { background: var(--panel); border: 1px solid var(--linie); border-radius: 8px;
+          padding: 14px 16px; margin-bottom: 12px; border-left: 3px solid var(--linie-2); }
+.abgabe.blockiert { border-left-color: var(--minus); }
+.abgabe.bereit { border-left-color: var(--akzent); }
+.abgabe.erledigt { border-left-color: var(--plus); opacity: .75; }
+.abgabe.laeuft { border-left-color: var(--linie-2); }
+.abgabe .kopfzeile { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.abgabe .kopfzeile .titel { font-weight: 600; font-size: 14px; }
+.abgabe .kopfzeile .rechts { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.abgabe .meta { font-size: 12px; color: var(--fg-leise); margin-top: 4px; }
+.abgabe .liste { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.6; }
+.abgabe .schritt { margin-top: 10px; padding: 8px 10px; border-radius: 6px;
+                   background: var(--akzent-bg); font-size: 12.5px; line-height: 1.55; }
+
+table.t td.eintrag { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                     font-weight: 600; text-align: right; white-space: nowrap; }
+table.t td.eintrag.text { font-family: inherit; font-weight: 500; text-align: left;
+                          white-space: normal; }
+table.t td.zeile { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                   color: var(--fg-leise); white-space: nowrap; width: 70px; }
+
+/* ---------------------------------------------------- ELSTER-Übermittlungen */
+
+.marke-chip.test { color: var(--akzent); background: var(--akzent-bg); border-color: color-mix(in srgb, var(--akzent) 35%, transparent); }
+tr.abweichung td { background: var(--warn-bg); }
+
+.xmlleiste { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--linie); background: var(--panel-2); }
+.seg { display: inline-flex; border: 1px solid var(--linie-2); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: var(--panel); color: var(--fg-leise); padding: 4px 12px; font-size: 12.5px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--linie-2); }
+.seg button:disabled { color: var(--fg-still); cursor: not-allowed; }
+.xmlansicht[data-ansicht="gelesen"] [data-zeige="gelesen"],
+.xmlansicht[data-ansicht="klartext"] [data-zeige="klartext"],
+.xmlansicht[data-ansicht="roh"] [data-zeige="roh"] { background: var(--akzent-bg); color: var(--akzent); font-weight: 600; }
+.xmlansicht[data-ansicht="gelesen"] .xmlroh,
+.xmlansicht[data-ansicht="roh"] .baum,
+.xmlansicht[data-ansicht="roh"] .nurgelesen { display: none; }
+.xmlansicht .klartext,
+.xmlansicht[data-ansicht="klartext"] .baum,
+.xmlansicht[data-ansicht="klartext"] .xmlroh,
+.xmlansicht[data-ansicht="klartext"] .nurgelesen { display: none; }
+.xmlansicht[data-ansicht="klartext"] .klartext { display: block; }
+.klartext .kt-gruppe { border-bottom: 1px solid var(--linie); }
+.klartext .kt-gruppe h4 { margin: 0; padding: 12px 14px 4px; font-size: 14px; }
+.klartext details.kt-gruppe > summary { padding: 10px 14px; cursor: pointer; font-size: 13px; }
+/* Feste Spalten: ein langer Freitext (Ergänzende Angaben, bis 999 Zeichen)
+   darf die Tabelle nicht verbreitern und die übrigen Werte aus dem Bild schieben */
+.klartext table.kt { table-layout: fixed; width: 100%; }
+.klartext table.kt td { vertical-align: top; }
+.klartext table.kt :is(th, td):nth-child(1) { width: 3.5em; }
+.klartext table.kt :is(th, td):nth-child(2) { width: 44%; }
+.klartext table.kt :is(th, td):nth-child(4) { width: 8.5em; }
+.klartext table.kt td.kt-wert { white-space: normal; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.klartext table.kt td.kt-wert.nw { white-space: nowrap; }
+.klartext table.kt td.kt-wert.kt-lang { text-align: left; line-height: 1.45; }
+.klartext table.kt td.kt-feld { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.klartext tr.kt-abschnitt td { background: var(--panel-2); font-size: 12px; font-weight: 600; color: var(--fg-leise); padding-top: 6px; padding-bottom: 6px; }
+.klartext tr.mark td.kt-wert { background: var(--akzent-bg); }
+.klartext details.kt-leer > summary { padding: 6px 14px 10px; cursor: pointer; }
+@media (max-width: 640px) { .klartext table.kt td.kt-feld, .klartext table.kt th:last-child { display: none; } .klartext table.kt :is(th, td):nth-child(2) { width: 50%; } }
+
+.xmlroh { margin: 0; padding: 12px 14px; font: 11.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--panel-2); overflow-x: auto; white-space: pre; tab-size: 4; }
+.xmlroh mark, .baum .blatt.mark { background: var(--warn-bg); color: inherit; border-radius: 2px; }
+
+.baum { padding: 10px 8px 12px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--panel-2); overflow-x: auto; }
+.baum details > div { margin-left: 9px; padding-left: 14px; border-left: 1px solid var(--linie); }
+.baum summary { cursor: pointer; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+.baum summary:hover, .baum .blatt:hover { background: var(--panel); }
+.baum .anz { font-weight: 400; color: var(--fg-still); font-size: 11px; margin-left: 6px; }
+.baum .attr { display: inline-block; font-weight: 400; font-size: 10.5px; color: var(--akzent); background: var(--akzent-bg); border-radius: 4px; padding: 0 5px; margin-left: 6px; }
+.baum .blatt { display: grid; grid-template-columns: minmax(150px, max-content) minmax(0, 1fr); gap: 16px; padding: 1px 6px; border-radius: 4px; }
+.baum .blatt .n { color: var(--fg-leise); }
+.baum .blatt .w { word-break: break-all; white-space: pre-wrap; }
+.baum .blatt .leer { color: var(--fg-still); font-style: italic; }
+
+.dokleiste { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 14px; }
+.dokleiste [aria-pressed="true"] { background: var(--akzent-bg); color: var(--akzent); font-weight: 600; }
+.dokansicht[data-ansicht="text"] .nurpdf,
+.dokansicht[data-ansicht="pdf"] .nurtext { display: none; }
+iframe.dokpdf { display: block; width: 100%; height: calc(100vh - 190px); min-height: 520px; border: 0; background: var(--panel-2); }
+iframe.protokoll { display: block; width: 100%; height: 640px; border: 0; background: var(--panel-2); }
+
+/* Abgabe in drei Schritten */
+.abgabe { padding: 6px 18px; }
+ol.schritte { margin: 0; padding: 0; list-style: none; counter-reset: schritt; }
+ol.schritte > li { counter-increment: schritt; position: relative; padding: 14px 0 14px 38px; border-bottom: 1px solid var(--linie); }
+ol.schritte > li:last-child { border-bottom: 0; }
+ol.schritte > li::before {
+  content: counter(schritt); position: absolute; left: 0; top: 13px; width: 24px; height: 24px;
+  border-radius: 50%; border: 1px solid var(--linie-2); display: grid; place-items: center;
+  font-size: 12px; font-weight: 600; color: var(--fg-leise);
+}
+ol.schritte > li.erledigt::before { content: '✓'; color: var(--plus); border-color: color-mix(in srgb, var(--plus) 45%, transparent); }
+label.bestaetigung { display: block; margin-top: 10px; font-size: 13px; max-width: 78ch; }
+label.bestaetigung input[type=checkbox] { margin-right: 6px; }
+label.bestaetigung input[type=text] { font: inherit; padding: 4px 8px; border: 1px solid var(--linie-2); border-radius: 6px; background: var(--panel); color: var(--fg); margin-left: 6px; }
+.knopf:disabled { opacity: .5; cursor: not-allowed; }
+.knopf.scharf:not(:disabled) { background: var(--minus); border-color: var(--minus); color: #fff; font-weight: 600; }
+.aktionsfehler { margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: color-mix(in srgb, var(--minus) 12%, transparent); color: var(--minus); font-size: 12.5px; }
+
+/* Zur Freigabe vorgelegte ELSTER-Übermittlungen */
+.karte.vorschlag { border-left: 3px solid var(--warn); }
+.vorschlag .vkopf { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.vorschlag .vkopf .zahl { font-size: 18px; font-variant-numeric: tabular-nums; }
+.vorschlag .schritte { list-style: none; padding: 0; margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 13px; }
+.vorschlag .schritte .haken { color: var(--fg-leise); }
+.vorschlag .schritte .fertig .haken { color: var(--plus); }
+.vorschlag details.verwerfen > summary { list-style: none; cursor: pointer; }
+.vorschlag details.verwerfen > summary::-webkit-details-marker { display: none; }
+.vorschlag details.verwerfen[open] { display: flex; gap: 6px; align-items: center; }
+.vorschlag details.verwerfen input { font: inherit; padding: 4px 8px; border: 1px solid var(--linie); border-radius: 6px; background: transparent; color: inherit; min-width: 0; }
+details.karte > .karte.vorschlag { margin: 10px 0 0; border-left-color: var(--linie); }
+.karte.vorschlag-hinweis { border-left: 3px solid var(--warn); }
+@media (max-width: 640px) { .vorschlag .vkopf { flex-direction: column; } }
+.pruefpunkte { margin: 0 0 10px; }
+.pruefpunkte > summary { cursor: pointer; color: var(--plus); }
+.pruefpunkte ul { margin: 6px 0 0; padding-left: 20px; font-size: 13px; }
+.pruefpunkte li { margin: 3px 0; }

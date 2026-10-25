@@ -96,7 +96,7 @@ Für beide Betriebsarten gleich:
 | **Überleitung geprüft** | jede Zeile der Steuererklärung, die auf Konten verweist, wird gegen die Salden gehalten; Abweichungen sperren die Abgabe |
 | **Belegarchiv** | jeder Beleg einmal kopiert, fortlaufende Nummer, Verknüpfung Buchung ↔ Bankumsatz ↔ Beleg |
 | **Abgeben ≠ zahlen** | beides sind eigene Termine. Ein übermittelter, aber unbezahlter Zeitraum sieht sonst erledigt aus — genau dort entstehen Säumniszuschläge (§ 240 AO) |
-| **Oberfläche** | zwölf Seiten im Browser, lokal und lesend; jede Zahl klappt bis zur Einzelbuchung und zum Beleg-PDF auf |
+| **Oberfläche** | im Browser, lokal und lesend — geschrieben wird nur bei einer ELSTER-Übermittlung, die ein Mensch auslöst; jede Zahl klappt bis zur Einzelbuchung und zum Beleg-PDF auf |
 
 ### Integrationen
 
@@ -105,8 +105,10 @@ Für beide Betriebsarten gleich:
 | **Qonto** (REST) | Bankumsätze samt Roh-JSON und die in Qonto angehängten Rechnungen als Belege |
 | **Stripe** (REST) | Ausgangsrechnungen und Bewegungen auf dem Guthaben — Gebühren getrennt vom Umsatz |
 | **Commerzbank** | Kontoauszugs-PDF in drei Vordruckgenerationen, dazu der CSV-Export |
+| **Kreditkarte** | erfasste Abrechnungen als CSV, geprüft über Saldo und Saldenkette je Abrechnung |
 | **DATEV** | ausgefertigte Einkommensteuererklärung als PDF, für das Vergleichsjahr |
 | **Belegordner** | `bh beleg scan` liest einen Ordner ein, `pdftotext` erschließt den Inhalt |
+| **ELSTER über ERiC** | Umsatzsteuer-Voranmeldung, Zusammenfassende Meldung, Körperschaft- und Gewerbesteuererklärung, E-Bilanz und Eröffnungsbilanz: lokal prüfen, testweise senden, abgeben; dazu das Postfach von Mein ELSTER. Braucht eine eigene, kostenlose Hersteller-ID — [docs/eric.md](docs/eric.md) |
 | **Schlüsselbund** | Zugangsdaten liegen im Schlüsselbund von macOS, ersatzweise in der Umgebung — nie im Quelltext |
 
 ### Noch nicht drin
@@ -116,8 +118,8 @@ Ehrlich gesagt, damit niemand danach sucht:
 | | Stand |
 |---|---|
 | **Umsatzsteuer-Jahreserklärung** | **fehlt — in Arbeit.** Die Voranmeldungen gibt es, und die Frist für die Jahreserklärung wird überwacht; der Zeitraum kennt aber nur Monat und Quartal, kein volles Jahr. Das Formular ist noch nicht gebaut. |
-| **Elektronische Übermittlung (ERiC)** | nicht vorgesehen. Die Anwendung erzeugt Zahlen zum Eintragen; abgegeben wird in Mein ELSTER von Hand. |
-| **E-Bilanz** | Datensatz fehlt. Die Frist nach § 5b EStG wird überwacht, erzeugt wird die Übermittlungsdatei nicht. |
+| **Einkommensteuer über ERiC** | nicht gebaut. Die private Erklärung wird weiter von Hand in Mein ELSTER übertragen; die Ausfüllhilfe nennt Zeile und Wert. |
+| **Unveränderbarkeit (GoBD)** | **fehlt.** Buchungen lassen sich ändern und löschen, ohne dass ein Protokoll das festhält, und es gibt keine Festschreibung abgegebener Zeiträume. Die GoBD verlangen beides (Rz. 58 f., 107 ff.). Bis das gebaut ist: Sicherungen der Datenbank aufheben und Korrekturen als Gegenbuchung erfassen, nicht durch Überschreiben. |
 | **weitere Banken** | bisher nur Commerzbank als PDF; alles andere über Qonto, Stripe oder CSV. |
 
 ### Was fehlt, baust du dir
@@ -237,23 +239,24 @@ die vorkamen.
 ## Was herauskommt
 
 Textausgaben, zeilen- und kennzahlengenau nach den amtlichen Vordrucken —
-zum Danebenlegen beim Ausfüllen, nicht zum Übermitteln. Eine ERiC-Anbindung
-gibt es nicht; abgegeben wird in Mein ELSTER von Hand.
+zum Danebenlegen beim Ausfüllen. Wer eine Hersteller-ID hat, übermittelt
+Voranmeldung, ZM, KSt, GewSt und E-Bilanz stattdessen direkt über ERiC
+([docs/eric.md](docs/eric.md)); ohne sie wird in Mein ELSTER von Hand abgegeben.
 
 **Anlage V, je Objekt eine** (`bh report <m> <jahr> anlagen`) — die
 Zeilennummern sind die des Formulars, mit Vorjahresspalte:
 
 ```
 1. Anlage V – Beispielstraße 1 · 10115 Berlin
-  AfA linear 2,00 % · angeschafft 01.03.2019 · Darlehen: Musterbank
+  AfA linear 2,00 % · angeschafft 01.06.2017 · Darlehen: Musterbank
 Einnahmen
-  Zeile 15  Mieteinnahmen für Wohnungen (ohne Umlagen)         0,00     6.376,00
-  Zeile 20  Umlagen: laufende Neben- und Betriebskosten        0,00     1.420,00
+  Zeile 15  Mieteinnahmen für Wohnungen (ohne Umlagen)         0,00     7.200,00
+  Zeile 20  Umlagen: laufende Neben- und Betriebskosten        0,00     1.200,00
 Werbungskosten
-  Zeile 33  Absetzung für Abnutzung, linear                1.435,00     1.435,00
-  Zeile 46  Schuldzinsen (ohne Tilgung)                    1.705,65     2.708,00
+  Zeile 33  Absetzung für Abnutzung, linear                1.600,00     1.600,00
+  Zeile 46  Schuldzinsen (ohne Tilgung)                    1.850,00     3.100,00
   Zeile 56  Erhaltungsaufwand, verteilt nach § 82b EStDV       0,00         0,00
-Zeile 85  Überschuss / Verlust                            -3.140,65     1.314,00
+Zeile 85  Überschuss / Verlust                            -3.450,00     1.500,00
 ```
 
 **Umsatzsteuer-Voranmeldung** (`bh ustva <m> <jahr>`) — die amtlichen
@@ -264,13 +267,13 @@ Begründung jeder Abweichung.
 
 ```
  Kz   Bezeichnung                                              Betrag
- 46   Leistungen eines im übrigen Gemeinschaftsgebiets…            31
- 47   Steuer auf die Leistungen in Kz 46                        5,89
- 66   Vorsteuerbeträge aus Rechnungen von anderen Unter…        5,12
- 83   Verbleibende Umsatzsteuer-Vorauszahlung                  -5,12
+ 46   Leistungen eines im übrigen Gemeinschaftsgebiets…            40
+ 47   Steuer auf die Leistungen in Kz 46                        7,60
+ 66   Vorsteuerbeträge aus Rechnungen von anderen Unter…        9,85
+ 83   Verbleibende Umsatzsteuer-Vorauszahlung                  -9,85
 
  PROBE GEGEN DIE BUCHFÜHRUNG
-   Kz 47   gebucht  6,04   Abweichung 0,15 — Rundung des Abschneidens
+   Kz 47   gebucht  7,75   Abweichung 0,15 — Rundung des Abschneidens
 ```
 
 Dazu **Zusammenfassende Meldung**, **Bilanz und GuV** nach HGB-Gliederung mit
@@ -443,6 +446,7 @@ buchhaltung/
 ./bh init beispiel 2025                    # Mandant, Jahr, Kontenplan
 ./bh eb   beispiel 2025 mandanten/beispiel/2025/eb.csv
 ./bh import-bank beispiel 2025 'pfad/Kontoauszug_*.pdf'
+./bh import-karte beispiel 2025 pfad/kartenabrechnungen.csv   # erfasste Kreditkartenabrechnungen
 ./bh umsaetze beispiel 2025 --offen        # Arbeitsliste zum Kontieren
 ./bh --db privat umsaetze privat 0 --suche Musterstr --ab-betrag 5000   # Archivsuche
 ./bh buchen beispiel 2025 mandanten/beispiel/2025/buchungen.csv
@@ -467,6 +471,18 @@ dass `bh pruefen` einen Abgleich mit dem Sachkonto verlangt — so sind die
 privaten Commerzbank-Konten abgelegt, bei denen objektweise aus der Anlage V
 gebucht wird und nicht über den Kontoauszug. `bh umsaetze <mandant> 0` sucht
 über alle Jahre, `--suche` filtert im Buchungstext (mehrfach = und).
+
+**Kreditkartenabrechnungen** kommen oft nur auf Papier. `bh import-karte
+<mandant> <jahr> <csv>` liest sie aus einer erfassten CSV-Datei — eine Zeile je
+Umsatz, dazu je Abrechnung der alte und der neue Saldo; das Format steht im
+Kopf von `bhl/importers/kartenabrechnung.py`. Das Erfassen selbst (Scan,
+Texterkennung, Abgleich gegen das Blatt) macht der Agent, die Anwendung rechnet
+nach: Eine Abrechnung, deren Umsätze nicht vom alten auf den neuen Saldo
+führen, wird nicht eingelesen, und ein Bruch in der Saldenkette zeigt die
+fehlende Abrechnung. Der Dublettenschutz hängt an der Fundstelle (Abrechnung,
+Seite, Zeile), nicht am Inhalt — zwei gleiche Käufe am selben Tag bleiben zwei
+Umsätze. Das Kartenkonto steht mit einer frei gewählten Kennung als `iban` in
+der `mandant.json`; Jahr `0` liest alle Jahre.
 
 Statt der Commerzbank-PDFs kann die Bank auch über eine Schnittstelle kommen:
 `bh import-qonto` und `bh import-stripe` holen Umsätze und Belege direkt. Die
@@ -573,6 +589,21 @@ Die Feststellungen stehen damit an derselben Stelle wie die übrigen offenen
 Punkte und nicht in einem Dokument daneben. Ein Prüfungsbericht, den man
 gesondert öffnen muss, wird beim nächsten Arbeitsschritt nicht gelesen.
 
+### Wer etwas tun muss
+
+Vier Felder machen aus einem Befund eine Aufgabe:
+
+| Feld | Bedeutung |
+|---|---|
+| `wer` | `du` (der Mensch, der freigibt), `extern` (ein Dritter muss liefern) oder `app`; fehlt es, gilt der Punkt als Aufgabe des Menschen |
+| `aktion` | was konkret zu tun ist — ein Satz im Imperativ, nicht der Befund |
+| `blockiert` | Abgaben, die auf den Punkt warten (`koerperschaftsteuer`, `ebilanz`, …); ohne eigene Frist erbt der Punkt deren Frist |
+| `fuer` | Frist-Punkte, die den nächsten Schritt einer Abgabe beschreiben |
+
+Die Seite *Deine Aufgaben* führt daraus, aus den Abgaben, überfälligen Fristen,
+Platzhaltern und fehlenden Belegen eine einzige Liste zusammen, nach Frist
+sortiert. Was Dritte liefern müssen oder die Anwendung selbst erledigt, steht darunter unter *Im Blick behalten*.
+
 `<jahr>/erzeuge_texte.py` schreibt daraus die Lesefassung `offene_punkte.md`,
 damit derselbe Stand auch gedruckt vorliegt.
 
@@ -605,8 +636,35 @@ Grundlage, damit die Annahme sichtbar bleibt:
 | Steuererklärungen | 31.07. des Folgejahres | § 149 Abs. 2 AO |
 | … wenn steuerlich beraten | Ende Februar des zweiten Folgejahres | § 149 Abs. 3 AO |
 | Jahresabschluss aufstellen | 3 Monate, kleine 6 Monate | § 264 Abs. 1 S. 2 / S. 3 HGB |
+| Feststellung (GmbH, UG) | 8 Monate, kleine 11 Monate | § 42a Abs. 2 GmbHG |
 | Offenlegung | 12 Monate nach dem Stichtag | § 325 Abs. 1a HGB |
 | … Kleinstkapitalgesellschaft | Hinterlegung statt Offenlegung | § 326 Abs. 2 HGB |
+| E-Bilanz | mit der Steuererklärung | § 5b EStG |
+| Lohnsteuerbescheinigungen (nur bei gebuchten Löhnen) | Ende Februar des Folgejahres | § 41b Abs. 1 S. 2 EStG |
+
+## Abgaben, ELSTER-Ausfüllhilfe und E-Bilanz
+
+Die Seite *Abgaben* zeigt je Geschäftsjahr jede Abgabe mit Empfänger, Weg und
+Frist und mit dem Zustand `erledigt`, `bereit` (es fehlt nur das Absenden) oder
+`blockiert` samt Hindernissen: Platzhalter, Abweichungen der Überleitung,
+Formularzeilen, die an einem offenen Punkt hängen, unvollständige E-Bilanz,
+fehlende Voraussetzung (keine Hinterlegung vor der Feststellung).
+
+**`<jahr>/elster.json`** ordnet jeder Zeile der Erklärungsvordrucke ihren Wert
+zu — als Verweis auf Konten, Buchungen, die GuV, Stammdaten oder andere Felder,
+nie als Betrag. Die Seite *ELSTER-Ausfüllhilfe* rechnet die Werte bei jedem
+Aufruf und hält sie in `gegenproben` gegen die steuerliche Überleitung und die
+Kontensalden. Zeilennummern stehen in der Datei, weil sie sich jedes Jahr
+verschieben; `zeilen_stand` nennt die Quelle.
+
+**`mandanten/<kürzel>/ebilanz.csv`** ordnet jedes Sachkonto einer Position der
+HGB-Taxonomie zu. Die Seite *E-Bilanz* baut daraus den Kontennachweis, der seit
+den Wirtschaftsjahren ab 2025 Pflicht ist, und prüft: alle Konten mit Saldo
+zugeordnet, Aktiva gleich Passiva nach Positionen, GuV gleich Jahresergebnis,
+neu vergebene Elementnamen geprüft. Mein ELSTER hat für die E-Bilanz kein
+Formular; den XBRL-Datensatz erzeugt `bh eric pruefen <m> <jahr> ebilanz`, im
+Gründungsjahr zusätzlich `eroeffnung` für die Eröffnungsbilanz (§ 5b Abs. 1
+Satz 4 EStG).
 
 Zwei Angaben steuern das, beide in `mandant.json` unter `"fristen"`:
 `steuerlich_beraten` und `groessenklasse` (`kleinst` | `klein` | `mittel`).
@@ -621,7 +679,7 @@ eine Zeile.
 
 ```
 jahr;art;status;erledigt_am;nachweis;notiz
-2025;koerperschaftsteuer;erledigt;2026-04-03;;Bescheid steht aus
+2025;koerperschaftsteuer;erledigt;2026-05-29;;Bescheid steht aus
 ```
 
 ## Belegablage
@@ -629,7 +687,7 @@ jahr;art;status;erledigt_am;nachweis;notiz
 ```bash
 ./bh beleg scan beispiel /pfad/zum/ordner --jahr 2025
 ./bh beleg add  beispiel rechnung.pdf --datum 2025-03-04 \
-                --aussteller "Bundesanzeiger Verlag GmbH" --betrag 72,95
+                --aussteller "Musterlieferant GmbH" --betrag 119,00
 ./bh beleg list beispiel --jahr 2025
 ```
 
@@ -728,7 +786,7 @@ Betrag** — seine Zahl ist die Differenz zwischen den benannten Treibern und de
 Jahresergebnis und wird bei jedem Aufruf gerechnet. Die Übersicht prüft, dass
 die Summe aufgeht.
 
-**Warum:** Am 02.09.2026 verschob eine Korrektur das Ergebnis um 63,45 EUR. Der
+**Warum:** Eine Korrektur verschob das Ergebnis um ein paar Euro. Der
 Restposten stand als feste Zahl in der Datei und stimmte sofort nicht mehr; die
 Prüfung „Ergebnistreiber erklären das Jahresergebnis vollständig" schlug an.
 Eine gerechnete Zahl kann nicht veralten.
@@ -808,6 +866,15 @@ Die Dokumente eines Jahres entstehen aus denselben Daten:
 `<jahr>/erzeuge_abschluss.py` schreibt den Jahresabschluss aus der Datenbank,
 `<jahr>/erzeuge_texte.py` die Steuererklärung aus `steuern.json` und die offenen
 Punkte aus `offene_punkte.json`. Von Hand gepflegt wird keine Zahl.
+
+Jedes Markdown-Dokument gibt es in der Oberfläche auch als **PDF** — Schalter
+*Text | PDF* über dem Dokument, oder direkt `/dokument/<id>.pdf?mandant=…&jahr=…`.
+Das PDF entsteht aus demselben Text (`bhl/druck.py`, ein Headless-Chrome druckt;
+Pfad notfalls über `BH_CHROME`) und landet nach Inhalt benannt unter `out/pdf/`.
+Zwei Trennlinien direkt hintereinander (`---` / `---`) werden im Druck zum
+Seitenumbruch; eine Zeile, die auf `\` endet, bricht um. So wird der
+Jahresabschluss unterschrieben und hinterlegt, ohne dass Bildschirm und Papier
+auseinanderlaufen können.
 
 ## Umsatzsteuer
 

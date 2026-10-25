@@ -112,6 +112,31 @@ def erledigungen(mandant_dir: str) -> dict[tuple[int, str], dict]:
     return d
 
 
+def festhalten(mandant_dir: str, jahr: int, art: str, status: str, erledigt_am: str,
+               nachweis: str, notiz: str) -> None:
+    """Eine Zeile in `fristen.csv` setzen - die vorhandene Zeile des Jahres und der
+    Art wird ersetzt, sonst angehaengt. Kommentare und uebrige Zeilen bleiben.
+    Die Spalte `grundlage` gehoert zu einer Verlaengerung und entfaellt mit ihr."""
+    pfad = os.path.join(mandant_dir, "fristen.csv")
+    kopf = "jahr;art;status;erledigt_am;nachweis;notiz;grundlage"
+    neu = ";".join([str(jahr), art, status, erledigt_am, nachweis,
+                    notiz.replace(";", ",").replace("\n", " "), ""])
+    zeilen = []
+    if os.path.exists(pfad):
+        with open(pfad, encoding="utf-8") as fh:
+            zeilen = fh.read().splitlines()
+    if not any(z.startswith("jahr;") for z in zeilen):
+        zeilen.append(kopf)
+    for i, z in enumerate(zeilen):
+        if z.split(";")[:2] == [str(jahr), art]:
+            zeilen[i] = neu
+            break
+    else:
+        zeilen.append(neu)
+    with open(pfad, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(zeilen) + "\n")
+
+
 def _eintrag(art, bezeichnung, faellig, grundlage, heute, erledigt=None,
              betrag_cent=None, verweis=None, hinweis=None, vorlaeufig=False) -> dict:
     erl = erledigt or {}
@@ -143,14 +168,36 @@ def _eintrag(art, bezeichnung, faellig, grundlage, heute, erledigt=None,
     }
 
 
+def ist_gmbh(rechtsform: str | None) -> bool:
+    """GmbH oder UG (haftungsbeschraenkt) - beide unterliegen dem GmbHG.
+
+    Die Unternehmergesellschaft ist keine eigene Rechtsform, sondern eine GmbH
+    mit Sonderregeln (§ 5a GmbHG). Fuer die Feststellung des Abschlusses gilt
+    deshalb dasselbe wie fuer jede GmbH.
+    """
+    r = (rechtsform or "").lower()
+    return ("gmbh" in r or "beschränkter haftung" in r
+            or "unternehmergesellschaft" in r or "haftungsbeschränkt" in r)
+
+
 def jahrespflichten(mandant_dir: str, jahr: int, gj_ende: str, heute: datetime.date,
                     kapitalgesellschaft: bool = True,
-                    umsatzsteuerpflichtig: bool = True) -> list[dict]:
-    """Erklaerungs-, Aufstellungs- und Offenlegungsfristen fuer ein Geschaeftsjahr."""
-    cfg = {}
+                    umsatzsteuerpflichtig: bool = True,
+                    lohnzahlung: bool = False) -> list[dict]:
+    """Erklaerungs-, Aufstellungs- und Offenlegungsfristen fuer ein Geschaeftsjahr.
+
+    `lohnzahlung` sagt, ob im Jahr Loehne gebucht sind. Die Buchfuehrung weiss
+    das, diese Funktion nicht - der Aufrufer zieht es aus den Konten. Dann
+    sind die Lohnsteuerbescheinigungen zu uebermitteln (§ 41b EStG), auch
+    wenn das Lohnbuero die Abrechnung macht: wer sie nicht hier sieht,
+    verlaesst sich darauf, dass jemand anderes daran gedacht hat.
+    """
+    cfg, stamm = {}, {}
     pfad = os.path.join(mandant_dir, "mandant.json")
     if os.path.exists(pfad):
-        cfg = (json.load(open(pfad, encoding="utf-8")).get("fristen") or {})
+        with open(pfad, encoding="utf-8") as fh:
+            stamm = json.load(fh)
+        cfg = stamm.get("fristen") or {}
     beraten = bool(cfg.get("steuerlich_beraten", False))
     klein = str(cfg.get("groessenklasse", "klein")) in ("kleinst", "klein")
     kleinst_gj = str(cfg.get("groessenklasse", "klein")) == "kleinst"
@@ -200,13 +247,30 @@ def jahrespflichten(mandant_dir: str, jahr: int, gj_ende: str, heute: datetime.d
         # Sie faellt leicht durchs Raster: Mein ELSTER hat kein Formular dafuer,
         # die E-Bilanz laeuft nur ueber Drittsoftware. Wer seine Erklaerungen
         # dort abgibt, hakt die Erklaerungen ab und uebersieht die Bilanz. Genau
-        # das kommt im Gruendungsjahr vor - KSt, GewSt und USt waren am
-        # 03.04.2026 uebermittelt, die Bilanz nie, und das Finanzamt hat sie am
-        # 20.08.2026 angefordert. Deshalb steht sie hier als eigene Zeile.
+        # das kommt im Gruendungsjahr vor: die Erklaerungen sind uebermittelt,
+        # die Bilanz nie, bis das Finanzamt sie anfordert. Deshalb steht sie
+        # hier als eigene Zeile.
         eintraege.append(_eintrag(
             "ebilanz", f"E-Bilanz {jahr} übermitteln", erklaerung,
             f"§ 5b EStG, Frist nach {grund_erkl}", heute,
             erl.get((jahr, "ebilanz")), verweis="#/steuern"))
+        # § 5b Abs. 1 Satz 4 EStG: im Fall der Eröffnung des Betriebs gilt die
+        # Übermittlungspflicht entsprechend für die Eröffnungsbilanz. Eine eigene
+        # Frist nennt das Gesetz nicht; sie ist Unterlage der ersten Erklärung
+        # und läuft hier mit deren Termin. Das Gründungsjahr erkennt die Liste
+        # am Datum des Gesellschaftsvertrags. Sie wird leicht übersehen, weil sie
+        # in keiner Formularliste von Mein ELSTER steht.
+        try:
+            gruendung = datetime.datetime.strptime(
+                stamm.get("gesellschaftsvertrag") or "", "%d.%m.%Y").date()
+        except ValueError:
+            gruendung = None
+        if gruendung and gruendung.year == jahr:
+            eintraege.append(_eintrag(
+                "eroeffnungsbilanz",
+                f"Eröffnungsbilanz zum {gruendung:%d.%m.%Y} als E-Bilanz übermitteln",
+                erklaerung, f"§ 5b Abs. 1 Satz 4 EStG, Frist wie die Erklärung ({grund_erkl})",
+                heute, erl.get((jahr, "eroeffnungsbilanz")), verweis="#/eric"))
         # § 264 Abs. 1 S. 2 HGB: drei Monate. S. 3 laesst kleinen Gesellschaften
         # sechs, "wenn dies einem ordnungsgemaessen Geschaeftsgang entspricht".
         eintraege.append(_eintrag(
@@ -216,6 +280,23 @@ def jahrespflichten(mandant_dir: str, jahr: int, gj_ende: str, heute: datetime.d
             f"({'Kleinstkapitalgesellschaft' if kleinst_gj else 'kleine' if klein else 'mittelgroße oder große'}"
             f"{'' if kleinst_gj else ' Kapitalgesellschaft'})",
             heute, erl.get((jahr, "jahresabschluss"))))
+        # § 42a Abs. 2 GmbHG: Aufgestellt ist der Abschluss erst ein Entwurf der
+        # Geschaeftsfuehrung. Verbindlich wird er durch den Beschluss der
+        # Gesellschafter ueber Feststellung und Ergebnisverwendung - acht Monate,
+        # bei kleinen Gesellschaften (§ 267 Abs. 1 HGB, Kleinstgesellschaften
+        # eingeschlossen) elf. Die Einpersonengesellschaft braucht dafuer keine
+        # Versammlung, aber eine unterschriebene Niederschrift (§ 48 Abs. 3
+        # GmbHG). Bei derselben Gelegenheit unterschreibt die Geschaeftsfuehrung
+        # den Abschluss (§ 245 HGB). Keine Verschiebung auf den Werktag: § 108
+        # AO gilt fuer Steuerfristen, nicht fuer das GmbHG.
+        if ist_gmbh(stamm.get("rechtsform")):
+            eintraege.append(_eintrag(
+                "feststellung",
+                f"Jahresabschluss {jahr} unterschreiben und feststellen",
+                _monate(stichtag, 11 if klein else 8),
+                f"§ 42a Abs. 2 GmbHG ({'elf Monate, kleine Gesellschaft' if klein else 'acht Monate'}),"
+                " § 245 HGB (Unterzeichnung)",
+                heute, erl.get((jahr, "feststellung")), verweis="#/abgaben"))
         # § 325 Abs. 1a HGB: spaetestens ein Jahr nach dem Abschlussstichtag.
         # Die Kleinstkapitalgesellschaft (§ 267a HGB) darf statt offenzulegen
         # nur die Bilanz hinterlegen (§ 326 Abs. 2 HGB) - dieselbe Frist, aber
@@ -228,6 +309,12 @@ def jahrespflichten(mandant_dir: str, jahr: int, gj_ende: str, heute: datetime.d
             ("§ 326 Abs. 2 HGB (Hinterlegung, Kleinstkapitalgesellschaft)" if kleinst
              else "§ 325 Abs. 1a HGB (Offenlegung im Bundesanzeiger)"),
             heute, erl.get((jahr, "offenlegung"))))
+    if lohnzahlung:
+        # § 41b Abs. 1 S. 2 EStG: bis zum letzten Tag des Februar des Folgejahres.
+        eintraege.append(_eintrag(
+            "lohnsteuerbescheinigung", f"Lohnsteuerbescheinigungen {jahr} übermitteln",
+            werktag(datetime.date(jahr + 1, 2, calendar.monthrange(jahr + 1, 2)[1])),
+            "§ 41b Abs. 1 Satz 2 EStG", heute, erl.get((jahr, "lohnsteuerbescheinigung"))))
     return eintraege
 
 
@@ -254,10 +341,15 @@ def laufend(zeitraeume: list[dict], heute: datetime.date) -> list[dict]:
                                       if z.get("dauerfrist") else ""),
                 heute, betrag_cent=z.get("kz83"), verweis=verweis, vorlaeufig=laeuft))
         if z.get("zahlung_offen"):
-            aus.append(_eintrag(
+            lastschrift = bool(z.get("lastschrift"))
+            eintrag = _eintrag(
                 "ustva_zahlung", f"Umsatzsteuer-Zahllast {z['bezeichnung']}", frist,
-                "§ 18 Abs. 1 S. 4 UStG — angemeldet, noch nicht gezahlt",
-                heute, betrag_cent=z.get("kz83"), verweis=verweis))
+                "§ 18 Abs. 1 S. 4 UStG — angemeldet, "
+                + ("wird zur Frist per SEPA-Lastschrift eingezogen" if lastschrift
+                   else "noch nicht gezahlt"),
+                heute, betrag_cent=z.get("kz83"), verweis=verweis)
+            eintrag["lastschrift"] = lastschrift
+            aus.append(eintrag)
         if z.get("zm_summe") and z.get("zm_frist"):
             zm_erledigt = (z.get("zm_stand") or {}).get("status") == "abgegeben"
             aus.append(_eintrag(
@@ -276,7 +368,7 @@ def laufend(zeitraeume: list[dict], heute: datetime.date) -> list[dict]:
 
 def alle(mandant_dir: str, jahre: list[tuple[int, str]], zeitraeume: list[dict],
          heute: datetime.date | None = None, kapitalgesellschaft: bool = True,
-         umsatzsteuerpflichtig: bool = True) -> dict:
+         umsatzsteuerpflichtig: bool = True, lohn_jahre: set[int] | None = None) -> dict:
     """Alle Termine, faelligste zuerst. Erledigte bleiben drin, aber hinten.
 
     `jahre` sind die angelegten Geschaeftsjahre als (Jahr, Stichtag) - nicht ein
@@ -291,7 +383,8 @@ def alle(mandant_dir: str, jahre: list[tuple[int, str]], zeitraeume: list[dict],
     eintraege = laufend(zeitraeume, heute)
     for j, ende in jahre:
         eintraege += jahrespflichten(mandant_dir, j, ende, heute, kapitalgesellschaft,
-                                     umsatzsteuerpflichtig)
+                                     umsatzsteuerpflichtig,
+                                     lohnzahlung=j in (lohn_jahre or set()))
 
     offen = [e for e in eintraege if e["status"] in OFFEN_STATUS]
     offen.sort(key=lambda e: e["faellig"])

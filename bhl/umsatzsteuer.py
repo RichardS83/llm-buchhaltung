@@ -321,8 +321,25 @@ def einstellungen(mandant_dir: str) -> dict:
         "satz": int(round(float(block.get("steuersatz", 0.19)) * 100)),
         "ermaessigt": int(round(float(block.get("steuersatz_ermaessigt", 0.07)) * 100)),
         "reverse_charge_abziehbar": bool(block.get("reverse_charge_voll_abziehbar", True)),
+        # Mit SEPA-Lastschriftmandat zieht das Finanzamt die Zahllast zur Frist
+        # selbst ein - zu tun ist dann nichts, nur Deckung auf dem Konto.
+        "lastschrift": bool(block.get("sepa_lastschrift", False)),
         "hinweis": block.get("hinweis", ""),
     }
+
+
+def zahlung_aus_bank(con: sqlite3.Connection, mandant_id: int, z: "Zeitraum") -> dict | None:
+    """Die Abbuchung der Zahllast im Bankkonto, erkannt am Verwendungszweck der
+    Berliner Finanzämter: "UMS.ST 2VJ.26 123,45EUR". Nur Quartale."""
+    if not z.quartal:
+        return None
+    marke = f"UMS.ST {z.quartal}VJ.{z.jahr % 100:02d}"
+    r = con.execute(
+        "SELECT t.buchungsdatum, t.betrag_cent, t.text FROM banktransaktion t"
+        " JOIN bankkonto k ON k.id = t.bankkonto_id"
+        " WHERE k.mandant_id = ? AND t.betrag_cent < 0 AND t.text LIKE ?"
+        " ORDER BY t.buchungsdatum LIMIT 1", (mandant_id, f"%{marke}%")).fetchone()
+    return dict(r) if r else None
 
 
 def eingabeblatt(con: sqlite3.Connection, mandant_id: int, z: Zeitraum,

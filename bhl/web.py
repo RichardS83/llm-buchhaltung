@@ -3,9 +3,14 @@
 """Lokale Weboberflaeche - `bh serve <mandant> <jahr>`.
 
 Nur Standardbibliothek, kein Framework, keine Internetverbindung. Der Server
-laeuft auf 127.0.0.1 und liest ausschliesslich - er schreibt nichts in die
-Datenbank. Damit ist die Oberflaeche eine Lesebrille auf den Abschluss, kein
-zweiter Buchungsweg.
+laeuft auf 127.0.0.1 und liest - er bucht nichts. Damit ist die Oberflaeche
+eine Lesebrille auf den Abschluss, kein zweiter Buchungsweg.
+
+Einzige Ausnahme sind die ELSTER-Uebermittlungen (POST /api/eric/...): pruefen,
+testen und abgeben ueber ERiC, und nach einer Abgabe das Festhalten von
+Transferticket und Werten. Diese Anfragen brauchen das Sitzungstoken, das nur
+in der hier ausgelieferten Seite steht, und kommen nur von 127.0.0.1/localhost
+- sonst koennte jede Webseite im selben Browser eine Abgabe ausloesen.
 
 **Jede Zahl laesst sich aufklappen.** Das ist der tragende Grundsatz der
 Oberflaeche, kein Zusatz einzelner Seiten: wo eine Zahl steht, die aus Konten
@@ -33,13 +38,18 @@ import json
 import mimetypes
 import os
 import posixpath
+import secrets
 import socketserver
 import sqlite3
 import threading
 import urllib.parse
 import webbrowser
+import xml.etree.ElementTree as ET
 
-from . import db, fristen, offen, pruefung, reports, steuern, umsatzsteuer, verknuepfung, vorjahr
+from . import abgaben, aufgaben, db, druck, ebilanz, elster, eric_ansicht, fristen, offen, pruefung
+from . import eric_postfach, eric_vorgang, eric_xml
+from . import reports, steuern
+from . import umsatzsteuer, verknuepfung, vorjahr
 from . import zeitraum as zr
 from .kontenplan import aus_mandant as rahmen_aus_mandant
 from .kontenplan import lade as lade_rahmen
@@ -56,12 +66,21 @@ DOKUMENTE = [
     ("elster", "ELSTER-Kennzahlen", "elster_kennzahlen_{jahr}.md"),
     ("offene_punkte", "Offene Punkte (Lesefassung)", "offene_punkte.md"),
     ("zinsberechnung", "Zinsberechnung Gesellschafterdarlehen", "zinsberechnung_1309.txt"),
+    # Entwuerfe zum Unterschreiben - sie liegen getrennt, weil sie erst mit der
+    # Unterschrift gelten und bis dahin geaendert werden duerfen.
+    ("feststellungsbeschluss", "Feststellungsbeschluss (Entwurf)",
+     "entwuerfe/feststellungsbeschluss_{jahr}.md"),
+    ("gf_anstellungsvertrag", "Geschäftsführer-Anstellungsvertrag (Entwurf)",
+     "entwuerfe/gf_anstellungsvertrag.md"),
+    ("gf_beschluss", "Gesellschafterbeschluss GF-Vergütung (Entwurf)",
+     "entwuerfe/gesellschafterbeschluss_gf_verguetung.md"),
     # Einkommensteuer: dieselbe Mechanik, andere Dateinamen.
     ("einkommensteuer", "Einkommensteuererklärung", "einkommensteuer_{jahr}.md"),
     ("ug_zinsen", "Gesellschafterdarlehen je Objekt", "ug_zinsen_{jahr}.txt"),
     ("bankzinsen", "Schuldzinsen der Bankdarlehen", "bankzinsen_{jahr}.txt"),
     ("bauzahlungen", "Bauzahlungen nach Objekt", "bauzahlungen_{jahr}.txt"),
     ("kostenaufstellung", "Kostenaufstellung", "kostenaufstellung_{jahr}.md"),
+    ("kreditkarte", "Kreditkarte — steuerliche Auswertung", "kreditkarte_{jahr}.md"),
 ]
 
 
@@ -148,6 +167,29 @@ class Kontext:
     def vj_gj_id(self) -> int | None:
         """Geschaeftsjahr des Vorjahres, falls uebernommen (`bh vorjahr`)."""
         return vorjahr.gj_id(self.con(), self.mandant_id, self.jahr - 1)
+
+    def stamm(self) -> dict:
+        """Datenbankzeile des Mandanten, ergaenzt um alles aus mandant.json.
+
+        Die Ausfuellhilfe braucht Angaben, die nur in der Datei stehen
+        (Anteilseigner, Gegenstand des Unternehmens) - die Datei ist dafuer die
+        Quelle, nicht eine Kopie in der Datenbank.
+        """
+        d = dict(self.mandant)
+        pfad = os.path.join(self.mandant_dir, "mandant.json")
+        if os.path.exists(pfad):
+            with open(pfad, encoding="utf-8") as fh:
+                d.update(json.load(fh))
+        return d
+
+    def lohnjahre(self) -> set[int]:
+        """Jahre, in denen Loehne gebucht sind - sie loesen § 41b EStG aus."""
+        return {r[0] for r in self.con().execute("""
+            SELECT g.jahr FROM buchungszeile z JOIN buchung b ON b.id = z.buchung_id
+            JOIN konto k ON k.id = z.konto_id JOIN geschaeftsjahr g ON g.id = b.gj_id
+            WHERE g.mandant_id = ? AND k.posten = 'PERSONAL_LOEHNE'
+            GROUP BY g.jahr HAVING SUM(z.soll_cent - z.haben_cent) <> 0""",
+            (self.mandant_id,))}
 
     def json_datei(self, name: str) -> dict | None:
         pfad = os.path.join(self.jahr_dir, name)
@@ -300,7 +342,7 @@ def uebersicht(k: Kontext) -> dict:
     # Der Restposten wird gerechnet, nicht gepflegt. Wer ihn in die Datei
     # schreibt, hat ihn nach der ersten Umbuchung falsch stehen - genau das
     # meldete die Pruefung "Ergebnistreiber erklaeren das Jahresergebnis
-    # vollstaendig" am 02.09.2026, nachdem sich das Ergebnis um 63,45 EUR
+    # vollstaendig", nachdem eine Korrektur das Ergebnis um ein paar Euro
     # verschoben hatte. Ein Treiber mit "rest": true traegt deshalb keinen
     # eigenen Betrag, sondern die Differenz zum Jahresergebnis.
     for t in treiber:
@@ -422,19 +464,13 @@ def uebersicht(k: Kontext) -> dict:
     # Termine: was zu tun ist, getrennt von dem, was nicht stimmt. Massgebend ist
     # der heutige Tag, nicht der Buchungsstand - eine Frist laeuft weiter, auch
     # wenn seit Wochen nichts gebucht wurde.
-    termine = fristen.alle(
-        k.mandant_dir,
-        [(g["jahr"], g["ende"]) for g in con.execute(
-            "SELECT jahr, ende FROM geschaeftsjahr WHERE mandant_id=? ORDER BY jahr",
-            (k.mandant_id,))],
-        alle_zeitraeume,
-        heute=datetime.date.today(), kapitalgesellschaft=not r.ueberschussrechnung,
-        # Kein Umsatzsteuerkonto im Kontenrahmen heisst: kein Unternehmer, keine
-        # Erklaerung. Die vermoegensverwaltende UG haelt nur Beteiligungen.
-        umsatzsteuerpflichtig=ust is not None)
+    termine = _termine(k, alle_zeitraeume)
+    auf = aufgaben_liste(k, termine) if voll else None
 
     return {
         "fristen": termine,
+        "aufgaben": ({"zaehler": auf["zaehler"], "naechste_frist": auf["naechste_frist"],
+                      "oben": auf["aufgaben"][:5]} if auf else None),
         "mandant": k.mandant, "jahr": k.jahr,
         "art": "privat" if r.ueberschussrechnung else "gesellschaft",
         "titel": {"bilanz": r.titel_bilanz, "guv": r.titel_guv,
@@ -472,6 +508,92 @@ def uebersicht(k: Kontext) -> dict:
             **o,
         },
     }
+
+
+def _umsatzsteuerpflichtig(k: Kontext) -> bool:
+    # Kein Umsatzsteuerkonto im Kontenrahmen heisst: kein Unternehmer, keine
+    # Erklaerung. Die vermoegensverwaltende UG haelt nur Beteiligungen.
+    return any(kt["ustva_kz"] for kt in k.con().execute(
+        "SELECT ustva_kz FROM konto WHERE mandant_id=?", (k.mandant_id,)))
+
+
+def _termine(k: Kontext, alle_zeitraeume: list[dict] | None = None) -> dict:
+    """Alle Fristen des Mandanten - eine Rechnung fuer Uebersicht und Aufgaben."""
+    con = k.con()
+    r = reports.rahmen(con, k.gj_id)
+    ust = _umsatzsteuerpflichtig(k)
+    if alle_zeitraeume is None:
+        alle_zeitraeume = ust_uebersicht(k)["zeitraeume"] if ust else []
+    return fristen.alle(
+        k.mandant_dir,
+        [(g["jahr"], g["ende"]) for g in con.execute(
+            "SELECT jahr, ende FROM geschaeftsjahr WHERE mandant_id=? ORDER BY jahr",
+            (k.mandant_id,))],
+        alle_zeitraeume,
+        heute=datetime.date.today(), kapitalgesellschaft=not r.ueberschussrechnung,
+        umsatzsteuerpflichtig=ust, lohn_jahre=k.lohnjahre())
+
+
+def abgabepaket(k: Kontext) -> dict:
+    """Was fuer das Geschaeftsjahr abzugeben ist und woran es noch haengt."""
+    r = reports.rahmen(k.con(), k.gj_id)
+    d = abgaben.paket(k.con(), k.gj_id, k.stamm(), k.mandant_dir, k.jahr_dir, k.jahr,
+                      {"beginn": k.gj_beginn, "ende": k.gj_ende}, datetime.date.today(),
+                      kapitalgesellschaft=not r.ueberschussrechnung,
+                      umsatzsteuerpflichtig=_umsatzsteuerpflichtig(k),
+                      lohnzahlung=k.jahr in k.lohnjahre())
+    d["mandant"] = k.mandant
+    return d
+
+
+def ausfuellhilfe(k: Kontext) -> dict:
+    d = elster.auswerten(k.con(), k.gj_id, k.stamm(), k.jahr_dir,
+                         {"beginn": k.gj_beginn, "ende": k.gj_ende})
+    if d is None:
+        return {"fehler": f"Für {k.jahr} gibt es keine Ausfüllhilfe (elster.json fehlt)."}
+    d["mandant"] = k.mandant
+    return d
+
+
+def ebilanz_seite(k: Kontext) -> dict:
+    d = ebilanz.auswerten(k.con(), k.gj_id, k.mandant_dir)
+    if d is None:
+        return {"fehler": "Keine Taxonomie-Zuordnung (ebilanz.csv) für diesen Mandanten."}
+    s = k.stamm()
+    d["stammdaten"] = {
+        "name": s.get("name"), "rechtsform": s.get("rechtsform"), "sitz": s.get("ort"),
+        "register": " ".join(x for x in (s.get("registergericht"), s.get("registernummer")) if x),
+        "steuernummer": s.get("steuernummer"), "finanzamt": s.get("finanzamt"),
+        "wirtschaftsjahr": f"{k.gj_beginn} – {k.gj_ende}",
+        "groessenklasse": (s.get("fristen") or {}).get("groessenklasse"),
+        "bilanzart": _bilanzart(k),
+    }
+    d["mandant"] = k.mandant
+    return d
+
+
+def _bilanzart(k: Kontext) -> str:
+    # Weicht die Steuerbilanz ab, beginnt die Ueberleitung in steuern.json mit
+    # einer eigenen Zeile "steuerbilanzergebnis" - dann braucht die E-Bilanz
+    # eine Ueberleitungsrechnung.
+    spec = steuern.laden(k.jahr_dir) or {}
+    abweichend = any(z.get("kennzahl") == "steuerbilanzergebnis"
+                     for a in spec.get("abschnitte", []) for z in a.get("zeilen", []))
+    return ("Handelsbilanz mit Überleitungsrechnung" if abweichend
+            else "Steuerbilanz = Handelsbilanz")
+
+
+def aufgaben_liste(k: Kontext, termine: dict | None = None) -> dict:
+    r = reports.rahmen(k.con(), k.gj_id)
+    paket = abgabepaket(k) if not r.ueberschussrechnung else None
+    st = k.json_datei("steuern.json")
+    if st:
+        st = steuern.pruefen(k.con(), k.gj_id, st, reports.ergebnis(k.con(), k.gj_id))
+    d = aufgaben.sammeln(paket, offene_punkte(k), termine or _termine(k), st,
+                         datetime.date.today().isoformat(), k.jahr)
+    d["mandant"] = k.mandant
+    d["jahr"] = k.jahr
+    return d
 
 
 def konten(k: Kontext) -> dict:
@@ -670,9 +792,24 @@ def dokument(k: Kontext, kuerzel: str) -> dict:
         pfad = os.path.join(k.jahr_dir, name)
         if os.path.exists(pfad):
             with open(pfad, encoding="utf-8") as fh:
+                markdown = not name.endswith(".txt")
                 return {"titel": titel, "datei": name, "text": fh.read(),
-                        "format": "text" if name.endswith(".txt") else "markdown"}
+                        "format": "markdown" if markdown else "text",
+                        "pdf": markdown and druck.chrome() is not None}
     return {"fehler": "Dokument nicht gefunden"}
+
+
+def dokument_pdf(k: Kontext, kuerzel: str) -> str:
+    """Pfad des PDFs zum Dokument - erzeugt aus demselben Markdown wie die Ansicht.
+
+    Abgelegt unter out/ (nicht versioniert), benannt nach dem Inhalt: ein
+    geaendertes Dokument bekommt ein neues PDF, ein veraltetes gibt es nicht.
+    """
+    d = dokument(k, kuerzel)
+    if "fehler" in d or d["format"] != "markdown":
+        raise NichtGefunden(f"Zu '{kuerzel}' gibt es kein druckbares Dokument.")
+    return druck.pdf(d["text"], f"{k.mandant['name']} – {d['titel']} {k.jahr}",
+                     os.path.join(k.wurzel, "out", "pdf", k.kuerzel, str(k.jahr)))
 
 
 def ust_uebersicht(k: Kontext) -> dict:
@@ -696,15 +833,18 @@ def ust_uebersicht(k: Kontext) -> dict:
         # der uebermittelt, aber nicht bezahlt ist, sieht sonst erledigt aus - und
         # genau das ist der Fall, in dem Saeumniszuschlaege entstehen.
         zahllast = st["status"] == "abgegeben" and (kz["steuern"]["83"] or 0) > 0
-        zahlung_offen = zahllast and not st.get("zahlung_am")
+        bank = (umsatzsteuer.zahlung_aus_bank(con, k.mandant_id, z)
+                if zahllast and not st.get("zahlung_am") else None)
+        zahlung_am = st.get("zahlung_am") or (bank and bank["buchungsdatum"])
+        zahlung_offen = zahllast and not zahlung_am
         zeilen.append({
             "jahr": z.jahr, "quartal": z.quartal, "code": z.code, "label": z.label,
             "bezeichnung": z.bezeichnung, "von": z.von.isoformat(), "bis": z.bis.isoformat(),
             "kz83": kz["steuern"]["83"], "basen": kz["basen"],
             "frist": frist.isoformat(),
             "ueberfaellig": st["status"] != "abgegeben" and frist < heute,
-            "zahlung_am": st.get("zahlung_am"),
-            "zahlung_offen": zahlung_offen,
+            "zahlung_am": zahlung_am, "zahlung_aus_bank": bool(bank),
+            "zahlung_offen": zahlung_offen, "lastschrift": e["lastschrift"],
             "zahlung_ueberfaellig": zahlung_offen and frist < heute,
             "status": st["status"], "transferticket": st.get("transferticket"),
             "abgegeben_am": st.get("abgegeben_am"), "notiz": st.get("notiz"),
@@ -734,6 +874,71 @@ def ust_uebersicht(k: Kontext) -> dict:
     return {"zeitraeume": zeilen, "einstellungen": e, "mandant": k.mandant}
 
 
+def zm_uebersicht(k: Kontext) -> dict:
+    """Alle Zusammenfassenden Meldungen: aus den Buchungen, was zu melden ist,
+    aus `voranmeldung`, was gemeldet wurde - über alle Jahre wie die Voranmeldungen."""
+    con = k.con()
+    e = umsatzsteuer.einstellungen(k.mandant_dir)
+    heute = datetime.date.today()
+    laeufe = [l for l in eric_ansicht.laeufe(k.mandant_dir) if l["art"] == "zm"]
+    zeilen, bekannt = [], set()
+    for z in umsatzsteuer.quartale(con, k.mandant_id):
+        zm = umsatzsteuer.zusammenfassende_meldung(con, k.mandant_id, z)
+        st = umsatzsteuer.stand(con, k.mandant_id, z, art="zm")
+        if not zm["summe"] and st["status"] == "offen":
+            continue
+        bekannt.add((z.jahr, z.code))
+        kz = umsatzsteuer.kennzahlen(con, k.mandant_id, z, e["satz"], e["ermaessigt"],
+                                     e["reverse_charge_abziehbar"])
+        try:
+            gemeldet_euro = {i: b for i, b in eric_xml.zm_zeilen(zm)}
+            fehler = None
+        except eric_xml.DatenFehlen as f:
+            gemeldet_euro, fehler = {}, str(f)
+        uebermittelt = st.get("kennzahlen")
+        eigene = [l for l in laeufe if (l["jahr"], l["zeitraum"]) == (z.jahr, z.code)]
+        zeilen.append({
+            "jahr": z.jahr, "code": z.code, "label": z.label, "bezeichnung": z.bezeichnung,
+            "von": z.von.isoformat(), "bis": z.bis.isoformat(), "frist": zm["frist"],
+            "laeuft_noch": z.bis >= heute,
+            "ueberfaellig": st["status"] != "abgegeben" and zm["frist"] < heute.isoformat(),
+            "summe": zm["summe"], "kz21": kz["basen"]["21"],
+            "meldebetrag_euro": sum(gemeldet_euro.values()), "fehler": fehler,
+            "kunden": [{"ust_idnr": c["ust_idnr"], "betrag": c["betrag"],
+                        "euro": gemeldet_euro.get(c["ust_idnr"].replace(" ", "")),
+                        "uebermittelt": (uebermittelt or {}).get(c["ust_idnr"]),
+                        "zeilen": [{x: r[x] for x in ("nummer", "datum", "buchungstext", "betrag",
+                                                      "belege", "belegfeld")}
+                                   for r in c["zeilen"]]} for c in zm["kunden"]],
+            "status": st["status"], "transferticket": st.get("transferticket"),
+            "abgegeben_am": st.get("abgegeben_am"), "notiz": st.get("notiz"),
+            "werte_erfasst": bool(uebermittelt),
+            "abweichend": (None if not uebermittelt else
+                           sum(str(gemeldet_euro.get(i)) != str(v) for i, v in uebermittelt.items())
+                           + len(set(gemeldet_euro) - set(uebermittelt))),
+            "lauf": eigene[0]["id"] if eigene else None,
+            "lauf_modus": eigene[0]["modus"] if eigene else None,
+        })
+    for r in con.execute("SELECT * FROM voranmeldung WHERE mandant_id=? AND art='zm'",
+                         (k.mandant_id,)):
+        if (r["jahr"], r["zeitraum"]) in bekannt:
+            continue
+        z = umsatzsteuer.zeitraum_aus_code(r["jahr"], r["zeitraum"])
+        zeilen.append({"jahr": z.jahr, "code": z.code, "label": z.label,
+                       "bezeichnung": z.bezeichnung, "von": z.von.isoformat(),
+                       "bis": z.bis.isoformat(), "frist": None, "laeuft_noch": False,
+                       "ueberfaellig": False, "summe": 0, "kz21": 0, "meldebetrag_euro": 0,
+                       "fehler": None, "kunden": [], "status": r["status"],
+                       "transferticket": r["transferticket"], "abgegeben_am": r["abgegeben_am"],
+                       "notiz": r["notiz"], "werte_erfasst": bool(r["kennzahlen"]),
+                       "abweichend": None, "lauf": None, "lauf_modus": None,
+                       "nur_historie": True})
+    zeilen.sort(key=lambda r: r["von"], reverse=True)
+    return {"zeitraeume": zeilen, "mandant": k.mandant,
+            "hinweis": "Die Dauerfristverlängerung gilt für die Zusammenfassende Meldung nicht "
+                       "(§ 18a Abs. 11 UStG): Frist ist der 25. nach Quartalsende."}
+
+
 def ust_zeitraum(k: Kontext, jahr: int, code: str) -> dict:
     con = k.con()
     z = umsatzsteuer.zeitraum_aus_code(jahr, code)
@@ -758,15 +963,302 @@ def ust_herkunft(k: Kontext, jahr: int, code: str, kennzahl: str) -> dict:
             "zeilen": zeilen, "summe": sum(r["betrag"] for r in zeilen)}
 
 
+def eric_liste(k: Kontext) -> dict:
+    """Alles, was an ELSTER ging - über ERiC und von Hand -, über alle Jahre."""
+    d = eric_ansicht.uebersicht(k.con(), k.mandant_id, k.mandant_dir)
+    d["mandant"] = k.mandant
+    return d
+
+
+def eric_lauf(k: Kontext, lauf_id: str) -> dict:
+    try:
+        d = eric_ansicht.detail(k.con(), k.mandant_id, k.mandant_dir, k.kuerzel, lauf_id)
+    except eric_ansicht.NichtGefunden as e:
+        raise NichtGefunden(str(e)) from None
+    l = d["lauf"]
+    eigene = [x for x in eric_ansicht.laeufe(k.mandant_dir)
+              if (x["jahr"], x["zeitraum"], x["art"]) == (l["jahr"], l["zeitraum"], l["art"])]
+    neueste = next((x for x in eigene if x["modus"] == "pruefen"), None)
+    test = next((x for x in eigene if x["modus"] == "test"), None)
+    d["neueste_pruefung"] = neueste and neueste["id"]
+    passt = False
+    if test:
+        pfad = os.path.join(k.mandant_dir, test["id"], "datensatz.xml")
+        if os.path.exists(pfad):
+            with open(pfad, encoding="utf-8", newline="") as fh:
+                passt = (eric_vorgang.sha256(eric_ansicht.ohne_testmerker(fh.read()))
+                         == l["datensatz"]["sha256"])
+    d["letzter_test"] = test and {"id": test["id"], "zeit": test["zeit"],
+                                  "angenommen": (test.get("ergebnis") or {}).get("gesendet"),
+                                  "testzertifikat": test.get("testzertifikat"),
+                                  "gleicher_datensatz": passt}
+    d["betrag_text"] = eric_vorgang.betrag_text(l["betrag_cent"])
+    d["mandant"] = k.mandant
+    return d
+
+
+# Eine ERiC-Sitzung zur Zeit: ERiC ist je Prozess einmal initialisiert, und
+# zwei Abgaben gleichzeitig will niemand.
+ERIC_SPERRE = threading.Lock()
+
+
+def eric_offen(k: Kontext) -> dict:
+    """Welche Meldungen abzugeben sind, mit der letzten Prüfung und dem letzten Test."""
+    con = k.con()
+    heute = datetime.date.today()
+    e = umsatzsteuer.einstellungen(k.mandant_dir)
+    laeufe = eric_ansicht.laeufe(k.mandant_dir)
+    zeilen = []
+    for z in umsatzsteuer.quartale(con, k.mandant_id):
+        for art in ("ustva", "zm"):
+            st = umsatzsteuer.stand(con, k.mandant_id, z, art=art)
+            if st["status"] == "abgegeben":
+                continue
+            if art == "zm":
+                zm = umsatzsteuer.zusammenfassende_meldung(con, k.mandant_id, z)
+                if not zm["summe"]:
+                    continue
+                betrag, frist = zm["summe"], zm["frist"]
+            else:
+                kz = umsatzsteuer.kennzahlen(con, k.mandant_id, z, e["satz"], e["ermaessigt"],
+                                             e["reverse_charge_abziehbar"])
+                betrag = kz["steuern"]["83"]
+                frist = z.frist(z.hat_dauerfrist(e["dauerfristverlaengerung_ab"])).isoformat()
+            eigene = [l for l in laeufe
+                      if (l["jahr"], l["zeitraum"], l["art"]) == (z.jahr, z.code, art)]
+            letzte = lambda modus: next((l for l in eigene if l["modus"] == modus), None)
+            p, t = letzte("pruefen"), letzte("test")
+            zeilen.append({
+                "jahr": z.jahr, "zeitraum": z.code, "label": z.label, "art": art,
+                "bezeichnung": z.bezeichnung, "betrag_cent": betrag, "frist": frist,
+                "status": st["status"], "laeuft_noch": z.bis >= heute,
+                "pruefung": p and {"id": p["id"], "zeit": p["zeit"],
+                                   "ok": (p.get("ergebnis") or {}).get("ok")},
+                "test": t and {"id": t["id"], "zeit": t["zeit"],
+                               "angenommen": (t.get("ergebnis") or {}).get("gesendet"),
+                               "testzertifikat": bool(t.get("testzertifikat"))},
+            })
+    # E-Bilanz, KSt und GewSt: Jahrespflichten der Kapitalgesellschaft, offen bis
+    # zum Eintrag in fristen.csv. Erst nach Ende des Wirtschaftsjahres können sie
+    # entstehen. Steht dort schon ein Transferticket bei offenem Status, war die
+    # Erklärung abgegeben und ist zu berichtigen — dann gilt keine Frist mehr.
+    r_ = reports.rahmen(con, k.gj_id)
+    erledigt = fristen.erledigungen(k.mandant_dir)
+    if not r_.ueberschussrechnung:
+        for g in con.execute("SELECT id, jahr, beginn, ende FROM geschaeftsjahr WHERE mandant_id=?"
+                             " ORDER BY jahr", (k.mandant_id,)):
+            termine = {t["art"]: t for t in fristen.jahrespflichten(
+                k.mandant_dir, g["jahr"], g["ende"], heute, kapitalgesellschaft=True,
+                umsatzsteuerpflichtig=False)}
+            stamm = eric_vorgang.stammdaten(k.mandant_dir)
+            try:
+                gruendung = datetime.datetime.strptime(
+                    stamm.get("gesellschaftsvertrag") or "", "%d.%m.%Y").date().isoformat()
+            except ValueError:
+                gruendung = None
+            for art, pflicht in eric_vorgang.JAHRESARTEN.items():
+                code = eric_vorgang.ZEITRAUM[art]
+                # Die Eröffnungsbilanz gibt es nur im Gründungsjahr (§ 5b Abs. 1 Satz 4 EStG)
+                if art == "eroeffnung" and g["beginn"] != gruendung:
+                    continue
+                st = eric_vorgang.stand(k.mandant_dir, g["jahr"], code, art)
+                if st and st["status"] == "abgegeben":
+                    continue
+                eigene = [l for l in laeufe
+                          if (l["jahr"], l["zeitraum"], l["art"]) == (g["jahr"], code, art)]
+                p = next((l for l in eigene if l["modus"] == "pruefen"), None)
+                t = next((l for l in eigene if l["modus"] == "test"), None)
+                if art in ("ebilanz", "eroeffnung"):
+                    try:
+                        betrag = (eric_vorgang.ebilanz_xbrl.abschluss(con, g["id"], k.mandant_dir)
+                                  if art == "ebilanz" else eric_vorgang.ebilanz_xbrl.eroeffnung(
+                                      con, g["id"], k.mandant_dir, stamm)).bilanzsumme
+                    except eric_vorgang.ebilanz_xbrl.EBilanzFehler:
+                        betrag = None
+                else:
+                    # Das zu versteuernde Einkommen steht erst im geprüften Datensatz fest
+                    betrag = p.get("betrag_cent") if p else None
+                termin = termine.get(pflicht)
+                berichtigung = bool(st and st["transferticket"]
+                                    and art not in ("ebilanz", "eroeffnung"))
+                klasse = {"WJ": eric_vorgang.Geschaeftsjahr, "EB": eric_vorgang.Eroeffnungsstichtag,
+                          "VZ": eric_vorgang.Veranlagungszeitraum}[code]
+                zeilen.append({
+                    "jahr": g["jahr"], "zeitraum": code, "label": str(g["jahr"]), "art": art,
+                    "bezeichnung": klasse(g["jahr"], g["beginn"], g["ende"]).bezeichnung,
+                    "betrag_cent": betrag,
+                    "frist": None if berichtigung else termin["faellig"] if termin else None,
+                    "berichtigung": berichtigung,
+                    "status": "offen",
+                    # Die Eröffnungsbilanz steht ab dem ersten Tag fest
+                    "laeuft_noch": art != "eroeffnung"
+                    and datetime.date.fromisoformat(g["ende"]) >= heute,
+                    "pruefung": p and {"id": p["id"], "zeit": p["zeit"],
+                                       "ok": (p.get("ergebnis") or {}).get("ok")},
+                    "test": t and {"id": t["id"], "zeit": t["zeit"],
+                                   "angenommen": (t.get("ergebnis") or {}).get("gesendet"),
+                                   "testzertifikat": bool(t.get("testzertifikat"))},
+                })
+    zeilen.sort(key=lambda r: (r["frist"] or "", r["art"]))
+    return {"zeilen": zeilen, "vorschlaege": eric_ansicht.vorschlaege(k.mandant_dir, laeufe)}
+
+
+def eric_verwerfen(k: Kontext, daten: dict) -> tuple[dict, int]:
+    """Einen Vorschlag zur Freigabe ablehnen. Der Lauf bleibt in der Ablage."""
+    try:
+        ordner = eric_ansicht.ordner(k.mandant_dir, str(daten["lauf"]))
+        v = eric_vorgang.verwerfen(ordner, str(daten.get("grund") or ""))
+    except KeyError:
+        return {"fehler": "lauf fehlt"}, 400
+    except eric_vorgang.VorgangFehler as f:
+        return {"fehler": str(f)}, 400
+    return {"ok": True, "vorschlag": v}, 200
+
+
+def eric_aktion(k: Kontext, aktion: str, daten: dict) -> tuple[dict, int]:
+    """Prüfen, testen oder abgeben, ausgelöst aus dem Browser."""
+    try:
+        art = daten["art"]
+        z = eric_vorgang.zeitraum(k.con(), k.mandant_id, int(daten["jahr"]), str(daten["zeitraum"]))
+    except (KeyError, ValueError, TypeError, eric_vorgang.VorgangFehler):
+        return {"fehler": "art, jahr und zeitraum fehlen"}, 400
+    if aktion not in eric_vorgang.MODI or art not in eric_vorgang.ARTEN:
+        return {"fehler": "unbekannte Aktion"}, 400
+
+    def freigabe(ds, vp, pruefung):
+        # Abgegeben wird nur, was angesehen wurde: die zuletzt geprüfte Fassung,
+        # Byte für Byte, mit Häkchen und eingetipptem Betrag.
+        if not pruefung or daten.get("pruefung") != pruefung["id"]:
+            raise eric_vorgang.VorgangFehler(
+                "Freigegeben ist nur die zuletzt geprüfte Fassung — bitte die neueste "
+                "Prüfung öffnen.")
+        if pruefung["datensatz"]["sha256"] != eric_vorgang.sha256(ds.xml):
+            raise eric_vorgang.VorgangFehler(
+                "Der Datensatz weicht von der geprüften Fassung ab (Buchführung oder Datum "
+                "haben sich geändert). Nichts gesendet — bitte neu prüfen und ansehen.")
+        if daten.get("gelesen") is not True:
+            raise eric_vorgang.VorgangFehler("Bestätigung, dass alles gelesen ist, fehlt.")
+        eingabe = str(daten.get("betrag", "")).replace(".", "").replace("€", "").strip()
+        if eingabe != eric_vorgang.betrag_text(ds.betrag_cent):
+            raise eric_vorgang.VorgangFehler("Der eingetippte Betrag stimmt nicht. Nichts gesendet.")
+
+    if not ERIC_SPERRE.acquire(blocking=False):
+        return {"fehler": "Es läuft schon eine Übermittlung."}, 409
+    try:
+        e = eric_vorgang.Einstellung.laden()
+        v = eric_vorgang.durchfuehren(
+            k.con(), k.mandant_id, k.kuerzel, k.mandant_dir, z, art, aktion, e,
+            freigabe=freigabe if aktion == "senden" else None)
+    except eric_vorgang.VorgangFehler as f:
+        lauf = getattr(f, "lauf", None)
+        return {"fehler": str(f), "lauf": _lauf_id(k, lauf.ordner) if lauf else None}, 409
+    finally:
+        ERIC_SPERRE.release()
+    r = v.lauf.ergebnis
+    return {"lauf": _lauf_id(k, v.lauf.ordner), "ok": r.ok, "gesendet": r.gesendet,
+            "transferticket": r.transferticket, "text": r.text,
+            "festgehalten": v.festgehalten}, 200
+
+
+def _kurztext(d: dict) -> str | None:
+    """Erste Zeile des Inhalts für die Liste: der <Text> einer XML-Rückmeldung."""
+    inhalt = d.get("inhalt")
+    if not inhalt or not inhalt.lstrip().startswith("<"):
+        return None
+    try:
+        for e in ET.fromstring(inhalt.strip().encode("utf-8")).iter():
+            if e.tag.rsplit("}", 1)[-1] == "Text" and (e.text or "").strip():
+                return e.text.strip()
+    except ET.ParseError:
+        pass
+    return None
+
+
+def _inhaltsart(roh: bytes | None) -> str | None:
+    if roh is None:
+        return None
+    if roh.startswith(b"%PDF"):
+        return "pdf"
+    return "xml" if roh.lstrip()[:1] == b"<" else "text"
+
+
+def postfach_liste(k: Kontext) -> dict:
+    zeilen = []
+    for d in eric_postfach.nachrichten(k.mandant_dir):
+        voll = eric_postfach.nachricht(k.mandant_dir, d["pfad"])
+        zeilen.append({**{x: d.get(x) for x in ("pfad", "id", "datenart", "meta",
+                                                "abgeholt_am", "bestaetigung", "anhaenge")},
+                       "kurztext": _kurztext(voll)})
+    return {"zeilen": zeilen}
+
+
+def postfach_nachricht(k: Kontext, nachricht_id: str) -> dict:
+    try:
+        d = eric_postfach.nachricht(k.mandant_dir, nachricht_id)
+        roh_pfad = os.path.join(eric_postfach.ordner(k.mandant_dir, nachricht_id), "datenpaket")
+    except eric_postfach.PostfachFehler as e:
+        raise NichtGefunden(str(e)) from None
+    roh = None
+    if os.path.exists(roh_pfad):
+        with open(roh_pfad, "rb") as fh:
+            roh = fh.read()
+    d["inhaltsart"] = _inhaltsart(roh)
+    if d["inhaltsart"] == "pdf":
+        d["inhalt"] = None
+    d["kurztext"] = _kurztext(d)
+    return d
+
+
+def postfach_abrufen(k: Kontext) -> tuple[dict, int]:
+    if not ERIC_SPERRE.acquire(blocking=False):
+        return {"fehler": "Es läuft schon eine Verbindung zu ELSTER."}, 409
+    try:
+        r = eric_postfach.abrufen(k.kuerzel, k.mandant_dir, eric_vorgang.Einstellung.laden())
+    except (eric_postfach.PostfachFehler, eric_vorgang.VorgangFehler) as f:
+        return {"fehler": str(f)}, 409
+    finally:
+        ERIC_SPERRE.release()
+    return {"status": r.status, "neu": r.neu, "vorhanden": r.vorhanden,
+            "bestaetigt": r.bestaetigt}, 200
+
+
+def _lauf_id(k: Kontext, ordner: str) -> str:
+    return os.path.relpath(ordner, k.mandant_dir).replace(os.sep, "/")
+
+
 def offene_punkte(k: Kontext) -> dict:
     return offen.uebersicht(k.con(), k.gj_id, k.jahr_dir,
                             heute=datetime.date.today().isoformat())
 
 
+STEUERERKLAERUNGEN = ("koerperschaftsteuer", "gewerbesteuer", "einkommensteuer",
+                      "umsatzsteuer_jahr", "ebilanz")
+
+
 def steuerseite(k: Kontext) -> dict:
     spec = k.json_datei("steuern.json")
     if not spec:
-        return {"fehler": "steuern.json fehlt"}
+        # Kein Fehler, sondern der Normalfall eines laufenden Jahres: die
+        # Überleitung zum zu versteuernden Einkommen entsteht mit dem Abschluss.
+        # Statt der nackten Meldung sagen, was ansteht und wo es weitergeht.
+        con = k.con()
+        r = reports.rahmen(con, k.gj_id)
+        heute = datetime.date.today()
+        pflichten = [
+            {f: e.get(f) for f in ("art", "bezeichnung", "faellig", "status", "erledigt_am")}
+            for e in fristen.jahrespflichten(
+                k.mandant_dir, k.jahr, k.gj_ende, heute,
+                kapitalgesellschaft=not r.ueberschussrechnung,
+                umsatzsteuerpflichtig=_umsatzsteuerpflichtig(k),
+                lohnzahlung=k.jahr in k.lohnjahre())
+            if e["art"] in STEUERERKLAERUNGEN]
+        andere = [int(j) for j in sorted(os.listdir(k.mandant_dir))
+                  if j.isdigit() and int(j) != k.jahr
+                  and os.path.exists(os.path.join(k.mandant_dir, j, "steuern.json"))]
+        return {"fehlt": True, "jahr": k.jahr, "gj_ende": k.gj_ende,
+                "laeuft_noch": k.gj_ende >= heute.isoformat(),
+                "ergebnis": reports.guv_daten(con, k.gj_id)["ergebnis"],
+                "pflichten": pflichten, "andere_jahre": andere}
     erg = reports.guv_daten(k.con(), k.gj_id)["ergebnis"]
     steuern.vergleich_aufbauen(spec, k.mandant_dir)
     return steuern.pruefen(k.con(), k.gj_id, spec, erg)
@@ -809,7 +1301,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         try:
             if pfad == "/" or pfad == "/index.html":
-                return self._datei(os.path.join(STATIC, "index.html"))
+                return self._startseite()
             if teile and teile[0] == "static":
                 return self._statisch(teile[1:])
             if teile == ["api", "mandanten"]:
@@ -818,6 +1310,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # PDF-Betrachter, gefunden wird der Beleg ueber die Nummer
             if teile[:1] == ["beleg"] and len(teile) == 3:
                 return self._beleg_datei(self._kontext(abfrage), int(teile[1]))
+            # /eric/datei?lauf=<jahr/elster/vorgang/lauf>&datei=protokoll.pdf
+            if teile == ["eric", "datei"]:
+                return self._eric_datei(self._kontext(abfrage), abfrage)
+            # /postfach/datei?id=<datenart/bereitstellung>&datei=datenpaket|<anhang>
+            if teile == ["postfach", "datei"]:
+                return self._postfach_datei(self._kontext(abfrage))
+            # /dokument/<id>.pdf - Druckfassung eines Dokuments
+            if teile[:1] == ["dokument"] and len(teile) == 2 and teile[1].endswith(".pdf"):
+                return self._dokument_pdf(self._kontext(abfrage), teile[1][:-4])
             if teile[:1] == ["api"]:
                 return self._api(self._kontext(abfrage), teile[1:])
         except NichtGefunden as e:
@@ -825,6 +1326,59 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:           # eine kaputte Seite ist besser als ein stiller Absturz
             return self._json({"fehler": f"{type(e).__name__}: {e}"}, 500)
         self._senden(b"nicht gefunden", "text/plain; charset=utf-8", 404)
+
+    def _startseite(self) -> None:
+        # Das Sitzungstoken steht nur in dieser Seite. Eine fremde Webseite kann
+        # sie wegen der Same-Origin-Policy nicht lesen und das Token deshalb
+        # nicht mitschicken.
+        with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as fh:
+            seite = fh.read().replace('<meta name="bh-token" content="">',
+                                      f'<meta name="bh-token" content="{self.basis["token"]}">')
+        self._senden(seite.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _gleiche_herkunft(self) -> bool:
+        port = self.basis["port"]
+        erlaubt = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if self.headers.get("Host") not in erlaubt:
+            return False                 # DNS-Rebinding
+        herkunft = self.headers.get("Origin")
+        return not herkunft or herkunft in {f"http://{h}" for h in erlaubt}
+
+    def _eigener_aufruf(self) -> bool:
+        return self._gleiche_herkunft() and secrets.compare_digest(
+            self.headers.get("X-BH-Token") or "", self.basis["token"])
+
+    def do_POST(self):                  # noqa: N802
+        zerlegt = urllib.parse.urlparse(self.path)
+        teile = [t for t in zerlegt.path.split("/") if t]
+        if not self._eigener_aufruf():
+            if self.headers.get("X-BH-Token") and self._gleiche_herkunft():
+                # Richtige Herkunft, alter Schlüssel: der Server wurde neu
+                # gestartet, während die Seite offen war
+                return self._json({"fehler": "Der Server wurde neu gestartet, seit diese Seite "
+                                   "geladen wurde. Nichts wurde gesendet — bitte die Seite neu "
+                                   "laden.", "neu_laden": True}, 403)
+            return self._json({"fehler": "Nur aus der Oberfläche selbst."}, 403)
+        laenge = int(self.headers.get("Content-Length") or 0)
+        if laenge > 10_000 or "json" not in (self.headers.get("Content-Type") or ""):
+            return self._json({"fehler": "ungültige Anfrage"}, 400)
+        try:
+            daten = json.loads(self.rfile.read(laenge) or b"{}")
+            k = self._kontext(zerlegt.query)
+            if teile == ["api", "eric", "postfach"]:
+                antwort, status = postfach_abrufen(k)
+                return self._json(antwort, status)
+            if teile == ["api", "eric", "verwerfen"]:
+                antwort, status = eric_verwerfen(k, daten)
+                return self._json(antwort, status)
+            if len(teile) == 3 and teile[:2] == ["api", "eric"]:
+                antwort, status = eric_aktion(k, teile[2], daten)
+                return self._json(antwort, status)
+        except NichtGefunden as e:
+            return self._json({"fehler": str(e)}, 404)
+        except Exception as e:
+            return self._json({"fehler": f"{type(e).__name__}: {e}"}, 500)
+        self._json({"fehler": "unbekannter Endpunkt"}, 404)
 
     def _api(self, k: Kontext, teile: list[str]) -> None:
         if teile == ["uebersicht"]:
@@ -845,6 +1399,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(steuerseite(k))
         if teile == ["offen"]:
             return self._json(offene_punkte(k))
+        if teile == ["abgaben"]:
+            return self._json(abgabepaket(k))
+        if teile == ["elster"]:
+            return self._json(ausfuellhilfe(k))
+        if teile == ["ebilanz"]:
+            return self._json(ebilanz_seite(k))
+        if teile == ["aufgaben"]:
+            return self._json(aufgaben_liste(k))
         if teile == ["konten"]:
             return self._json(konten(k))
         if teile[:1] == ["konto"] and len(teile) == 2:
@@ -867,8 +1429,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(dokumente(k))
         if teile[:1] == ["dokument"] and len(teile) == 2:
             return self._json(dokument(k, teile[1]))
+        if teile == ["eric"]:
+            return self._json(eric_liste(k))
+        if teile == ["eric", "offen"]:
+            return self._json(eric_offen(k))
+        if teile == ["postfach"]:
+            return self._json(postfach_liste(k))
+        if teile == ["postfach", "nachricht"]:
+            return self._json(postfach_nachricht(k, self._abfrage("id")))
+        # Die Lauf-ID enthält Schrägstriche und kommt deshalb als Abfrage
+        if teile == ["eric", "lauf"]:
+            return self._json(eric_lauf(k, self._abfrage("lauf")))
         if teile == ["ust"]:
             return self._json(ust_uebersicht(k))
+        if teile == ["zm"]:
+            return self._json(zm_uebersicht(k))
         if teile[:1] == ["ust"] and len(teile) == 3:
             return self._json(ust_zeitraum(k, int(teile[1]), teile[2]))
         if teile[:1] == ["ust"] and len(teile) == 5 and teile[3] == "kz":
@@ -881,6 +1456,57 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not os.path.abspath(pfad).startswith(os.path.abspath(STATIC)):
             return self._senden(b"verboten", "text/plain", 403)
         self._datei(pfad)
+
+    def _abfrage(self, name: str) -> str:
+        p = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        return (p.get(name) or [""])[0]
+
+    def _eric_datei(self, k: Kontext, abfrage: str) -> None:
+        try:
+            pfad = eric_ansicht.datei(k.mandant_dir, self._abfrage("lauf"), self._abfrage("datei"))
+        except eric_ansicht.NichtGefunden as e:
+            raise NichtGefunden(str(e)) from None
+        self._datei(pfad, inline=True)
+
+    def _dokument_pdf(self, k: Kontext, kuerzel: str) -> None:
+        try:
+            pfad = dokument_pdf(k, kuerzel)
+        except druck.DruckFehler as e:
+            return self._senden(str(e).encode("utf-8"), "text/plain; charset=utf-8", 503)
+        with open(pfad, "rb") as fh:
+            daten = fh.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Content-Length", str(len(daten)))
+        self.send_header("Content-Disposition",
+                         f'inline; filename="{kuerzel}_{k.kuerzel}_{k.jahr}.pdf"')
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(daten)
+
+    def _postfach_datei(self, k: Kontext) -> None:
+        try:
+            pfad = eric_postfach.datei(k.mandant_dir, self._abfrage("id"), self._abfrage("datei"))
+        except eric_postfach.PostfachFehler as e:
+            raise NichtGefunden(str(e)) from None
+        if not os.path.exists(pfad):
+            return self._senden(b"nicht gefunden", "text/plain; charset=utf-8", 404)
+        with open(pfad, "rb") as fh:
+            daten = fh.read()
+        # Das Datenpaket hat keine Endung: die Art steht in den ersten Bytes
+        typ = {"pdf": "application/pdf", "xml": "application/xml",
+               "text": "text/plain; charset=utf-8"}[_inhaltsart(daten)] \
+            if os.path.basename(pfad) == "datenpaket" \
+            else (mimetypes.guess_type(pfad)[0] or "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", typ)
+        self.send_header("Content-Length", str(len(daten)))
+        self.send_header("Content-Disposition", "inline")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(daten)
 
     def _beleg_datei(self, k: Kontext, beleg_id: int) -> None:
         r = k.con().execute("SELECT pfad FROM beleg WHERE mandant_id=? AND id=?",
@@ -924,7 +1550,8 @@ def starten(db_pfade: list[str] | str, wurzel: str, kuerzel: str, jahr: int,
             port: int = 8765, oeffnen: bool = True) -> None:
     if isinstance(db_pfade, str):
         db_pfade = [db_pfade]
-    Handler.basis = {"dbs": db_pfade, "wurzel": wurzel, "kuerzel": kuerzel, "jahr": jahr}
+    Handler.basis = {"dbs": db_pfade, "wurzel": wurzel, "kuerzel": kuerzel, "jahr": jahr,
+                     "port": port, "token": secrets.token_urlsafe(32)}
     try:
         start = hole_kontext(db_pfade, wurzel, kuerzel, jahr)  # prueft Mandant und Jahr
     except NichtGefunden as e:

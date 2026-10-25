@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="bh-token" content="">
 <title>Jahresabschluss</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -21,16 +22,33 @@
     </div>
   </div>
   <ul class="menue">
+    <!-- Arbeit: was zu tun ist und bis wann -->
     <li><a href="#/uebersicht" data-seite="uebersicht">Übersicht</a></li>
+    <li><a href="#/aufgaben" data-seite="aufgaben">Deine Aufgaben<span id="aufgabenzahl" class="nav-zahl" hidden></span></a></li>
+    <li><a href="#/offen" data-seite="offen">Offene Punkte<span id="offenzahl" class="nav-zahl" hidden></span></a></li>
+    <li data-art="gesellschaft"><a href="#/abgaben" data-seite="abgaben">Abgaben und Fristen</a></li>
+    <!-- Bilanz, GuV und Steuererklärung stehen bei der privaten Erklärung unter
+         „Einkommensteuer“, bei einer Gesellschaft unter eigenen Gruppen: die
+         Überschriften davor sind je Art ein- oder ausgeblendet. -->
     <li class="gruppe" data-art="privat">Einkommensteuer</li>
     <li data-art="privat"><a href="#/anlagen" data-seite="anlagen">Vermietung und Verpachtung</a></li>
-    <li class="gruppe" data-art="gesellschaft">Abschluss</li>
+    <li class="gruppe" data-art="gesellschaft">Jahresabschluss</li>
     <li><a href="#/bilanz" data-seite="bilanz">Bilanz</a></li>
     <li><a href="#/guv" data-seite="guv">Gewinn- und Verlustrechnung</a></li>
+    <!-- nur sichtbar, wenn es das Dokument im Jahr gibt (dokumenteFuellen) -->
+    <li data-dok="jahresabschluss" hidden><a href="#/dokument/jahresabschluss" data-seite="dokument">Abschluss zum Unterschreiben</a></li>
+    <li data-dok="feststellungsbeschluss" hidden><a href="#/dokument/feststellungsbeschluss" data-seite="dokument">Feststellungsbeschluss</a></li>
+    <li class="gruppe" data-art="gesellschaft">Steuern</li>
     <li><a href="#/steuern" data-seite="steuern">Steuererklärungen</a></li>
-    <li><a href="#/offen" data-seite="offen">Offene Punkte<span id="offenzahl" class="nav-zahl" hidden></span></a></li>
-    <li class="gruppe" data-art="gesellschaft">Umsatzsteuer</li>
-    <li data-art="gesellschaft"><a href="#/ust" data-seite="ust">Voranmeldungen</a></li>
+    <li data-art="gesellschaft"><a href="#/ust" data-seite="ust">Umsatzsteuer-Voranmeldungen</a></li>
+    <li data-art="gesellschaft"><a href="#/zm" data-seite="zm">Zusammenfassende Meldungen</a></li>
+    <!-- Wie es zum Finanzamt kommt -->
+    <li class="gruppe" data-art="gesellschaft">ELSTER</li>
+    <li data-art="gesellschaft"><a href="#/eric" data-seite="eric">Übermittlungen<span id="freigabezahl" class="nav-zahl" hidden title="zur Freigabe vorgelegt"></span></a></li>
+    <li data-art="gesellschaft"><a href="#/postfach" data-seite="postfach">Postfach</a></li>
+    <li data-art="gesellschaft"><a href="#/elster" data-seite="elster">Ausfüllhilfe Mein ELSTER</a></li>
+    <li data-art="gesellschaft"><a href="#/ebilanz" data-seite="ebilanz">E-Bilanz</a></li>
+    <!-- Woher die Zahlen kommen -->
     <li class="gruppe">Buchhaltung</li>
     <li data-art="privat"><a href="#/pruefung" data-seite="pruefung">Prüfungen</a></li>
     <li><a href="#/konten" data-seite="konten">Konten</a></li>

@@ -77,6 +77,19 @@ async function holen(pfad, frisch = false) {
   return daten;
 }
 
+/** Eine Aktion auslösen (nur ELSTER-Übermittlungen). Das Token steht in der
+ * ausgelieferten Seite; ohne es lehnt der Server ab. */
+async function posten(pfad, daten) {
+  const token = document.querySelector('meta[name="bh-token"]')?.content || '';
+  const antwort = await fetch(mitKontext(pfad), {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-BH-Token': token },
+    body: JSON.stringify(daten) });
+  let d;
+  try { d = await antwort.json(); } catch { d = { fehler: `${antwort.status} ${antwort.statusText}` }; }
+  zwischenspeicher.clear();
+  return { ok: antwort.ok, ...d };
+}
+
 /** Fehlerseite mit Rückweg - eine Sackgasse hilft niemandem. */
 function fehlerSeite(text) {
   const wege = (MANDANTEN || []).flatMap((m) => m.jahre.map((j) =>
@@ -195,6 +208,8 @@ async function zeichnen() {
       await zeitraeumeFuellen();
       await dokumenteFuellen();
       offenzahlSetzen();               // die Zahl gehoert zum Mandanten, nicht zum Start
+      aufgabenzahlSetzen();
+      freigabezahlSetzen();
     } catch (e) {
       return fehlerSeite(String(e && e.message || e));
     }
@@ -452,11 +467,12 @@ function fristenHtml(f) {
   const zeile = (e) => {
     const erledigt = e.status === 'erledigt' || e.status === 'entfaellt';
     const wann = erledigt
-      ? (e.erledigt_am ? `erledigt ${datum(e.erledigt_am)}` : 'erledigt')
+      ? `✓ ${e.status === 'entfaellt' ? 'entfällt' : 'erledigt'}${
+          e.erledigt_am ? ` ${datum(e.erledigt_am)}` : ''}`
       : (e.tage < 0 ? `${-e.tage} Tage über der Frist`
         : e.tage === 0 ? 'heute fällig'
         : e.tage === 1 ? 'morgen fällig' : `in ${e.tage} Tagen`);
-    const marke = erledigt ? '' : e.status === 'ueberfaellig' ? 'schlecht'
+    const marke = erledigt ? 'gut' : e.status === 'ueberfaellig' ? 'schlecht'
       : e.tage <= 14 ? 'warn' : '';
     const verlaengert = e.status === 'verlaengert'
       ? ' <span class="marke-chip">Frist verlängert</span>' : '';
@@ -474,7 +490,9 @@ function fristenHtml(f) {
   };
   const istOffen = (e) => ['offen', 'ueberfaellig', 'verlaengert'].includes(e.status);
   const offen = f.eintraege.filter(istOffen);
-  const erledigt = f.eintraege.filter((e) => !istOffen(e));
+  // Erledigtes in derselben Form wie das Offene, neueste Frist zuerst
+  const erledigt = f.eintraege.filter((e) => !istOffen(e))
+    .sort((a, b) => (b.faellig || '').localeCompare(a.faellig || ''));
   return `<h2>Fristen und Fälligkeiten</h2>
     <div class="kennzahlen">
       ${kz('Offene Termine', String(f.offen),
@@ -490,9 +508,9 @@ function fristenHtml(f) {
         <th class="z">Betrag</th><th>Stand</th></tr></thead>
       <tbody>${offen.map(zeile).join('') || `<tr><td colspan="4" class="still">
         Nichts offen.</td></tr>`}</tbody>
-      ${erledigt.length ? `<tfoot><tr class="summe"><td colspan="4" class="klein still">
-        ${erledigt.length} erledigt: ${erledigt.map((e) => esc(e.bezeichnung)).join(' · ')}
-        </td></tr></tfoot>` : ''}
+      ${erledigt.length ? `<tbody class="erledigt">
+        <tr class="ueberschrift"><td colspan="4">Erledigt (${erledigt.length})</td></tr>
+        ${erledigt.map(zeile).join('')}</tbody>` : ''}
     </table></div>
     <p class="klein still">Die gesetzlichen Fristen sind aus Stichtag und Paragraf gerechnet,
       nicht hinterlegt. Sie hängen an zwei Annahmen in <span class="mono">mandant.json</span>
@@ -520,6 +538,17 @@ SEITEN.uebersicht = async () => {
        <br>${zeitraumZeile(d.zeitraum)}`)}
 
     ${d.kurzfassung ? `<div class="karte"><p style="margin:0">${esc(d.kurzfassung)}</p></div>` : ''}
+
+    ${d.aufgaben && d.aufgaben.zaehler.aufgaben ? `<div class="karte" style="border-left:3px solid var(--minus)">
+      <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
+        <strong>Braucht dich: ${d.aufgaben.zaehler.aufgaben} Aufgabe${d.aufgaben.zaehler.aufgaben > 1 ? 'n' : ''}</strong>
+        ${d.aufgaben.zaehler.ueberfaellig ? `<span class="marke-chip schlecht">${d.aufgaben.zaehler.ueberfaellig} überfällig</span>` : ''}
+        ${d.aufgaben.naechste_frist ? `<span class="marke-chip warn">nächste Frist ${datum(d.aufgaben.naechste_frist)}</span>` : ''}
+        <a href="#/aufgaben" style="margin-left:auto">Alle Aufgaben →</a></div>
+      <ul style="margin:8px 0 0;padding-left:18px">${d.aufgaben.oben.map((a) => `<li>
+        ${a.frist ? `<span class="mono klein ${a.ueberfaellig ? 'minus' : 'leise'}">${datum(a.frist)}</span> ` : ''}
+        ${a.quelle ? `<span class="mono klein still">${esc(a.quelle)}</span> ` : ''}${esc(a.titel)}</li>`).join('')}</ul>
+    </div>` : ''}
 
     <h2>Handelsbilanz</h2>
     <div class="kennzahlen">
@@ -791,6 +820,32 @@ SEITEN.steuern = async () => {
   const d = await holen('/api/steuern');
   const jahr = d.jahr;
   if (d.fehler) { inhalt.innerHTML = kopf('Steuern', esc(d.fehler)); return; }
+  if (d.fehlt) {
+    // Laufendes Jahr: noch keine Überleitung - sagen, was ansteht und wo es weitergeht
+    const link = (j) => `#/steuern?mandant=${encodeURIComponent(KONTEXT.mandant)}&jahr=${j}`;
+    const frist = d.pflichten.filter((p) => p.status !== 'erledigt').map((p) => p.faellig).sort()[0];
+    inhalt.innerHTML = `
+      ${kopf(`Steuern ${d.jahr}`, d.laeuft_noch
+        ? `Das Geschäftsjahr ${d.jahr} läuft noch bis ${datum(d.gj_ende)}. Die Überleitung vom Ergebnis
+           zum zu versteuernden Einkommen entsteht mit dem Jahresabschluss — bis dahin gibt es hier nichts zu erklären.`
+        : `Für ${d.jahr} ist die Steuerberechnung noch nicht angelegt. Sie entsteht mit dem Jahresabschluss
+           (<span class="mono">${d.jahr}/steuern.json</span>).`)}
+      <div class="kennzahlen">
+        ${kz(d.laeuft_noch ? 'Vorläufiges Ergebnis bis heute' : 'Jahresergebnis',
+             `<a href="#/guv?${kontextAbfrage()}">${eur(d.ergebnis)}</a>`, 'laut Buchführung, vor Steuern')}
+        ${frist ? kz('Erklärungen fällig', datum(frist), d.laeuft_noch ? 'nach Ende des Geschäftsjahres' : '') : ''}
+      </div>
+      ${d.pflichten.length ? `<div class="karte eng"><table class="t">
+        <thead><tr><th>Erklärung</th><th>Frist</th><th>Stand</th></tr></thead>
+        <tbody>${d.pflichten.map((p) => `<tr><td>${esc(p.bezeichnung)}</td>
+          <td class="nw klein">${datum(p.faellig)}</td>
+          <td><span class="marke-chip ${p.status === 'erledigt' ? 'gut' : p.status === 'ueberfaellig' ? 'schlecht' : ''}">${
+            esc({ ueberfaellig: 'überfällig', verlaengert: 'verlängert' }[p.status] || p.status)}</span></td></tr>`).join('')}
+        </tbody></table></div>` : ''}
+      ${d.andere_jahre.length ? `<p>Steuerberechnung vorhanden für ${d.andere_jahre.map((j) =>
+        `<a href="${link(j)}">${j}</a>`).join(', ')}.</p>` : ''}`;
+    return;
+  }
 
   const zeile = (z, schluessel) => {
     if (z.art === 'gruppe') {
@@ -1149,7 +1204,13 @@ const PUNKT_STATUS = {
   erledigt:     ['erledigt', 'gut'],
 };
 
-SEITEN.offen = async () => {
+const WER = {
+  du: ['du', 'warn'],
+  extern:  ['Dritte', ''],
+  app:     ['Anwendung', ''],
+};
+
+SEITEN.offen = async (z0) => {
   const d = await holen('/api/offen');
   const z = d.zaehler;
 
@@ -1159,7 +1220,7 @@ SEITEN.offen = async () => {
   const punkt = (p) => {
     const erledigt = p.status === 'erledigt' || p.status === 'entschieden';
     const klasse = erledigt ? p.status : (p.prioritaet || '');
-    return `<div class="punkt ${klasse}">
+    return `<div class="punkt ${klasse}" id="punkt-${esc(p.id)}">
       <div class="zeile1">
         <span class="kennung">${esc(p.id)}</span>
         <span class="titel">${esc(p.titel)}</span>
@@ -1169,6 +1230,12 @@ SEITEN.offen = async () => {
           ${p.ueberfaellig ? '<span class="marke-chip schlecht">überfällig</span>' : ''}
         </span>
       </div>
+      ${p.aktion && !erledigt && p.status !== 'behoben' ? `<div class="aktion">
+        <span class="marke-chip ${WER[p.wer]?.[1] || 'warn'}">${esc(WER[p.wer]?.[0] || 'du')}</span>
+        <span>${esc(p.aktion)}</span>
+        ${(p.blockiert || []).length ? `<span class="marke-chip schlecht"
+          title="Diese Abgaben warten auf den Punkt">blockiert ${p.blockiert.map(esc).join(', ')}</span>` : ''}
+      </div>` : ''}
       <div class="text dok">${markdown(p.text)}</div>
       <div class="fuss">
         ${p.frist ? `<span><strong>Frist</strong> ${datum(p.frist)}</span>` : ''}
@@ -1248,6 +1315,10 @@ SEITEN.offen = async () => {
       <thead><tr><th>Datum</th><th>Beleg&shy;feld</th><th>Buchung</th><th class="z">Betrag</th>
         <th>Woher</th><th class="z">Journal</th></tr></thead>
       <tbody>${d.fehlende_belege.map(belegzeile).join('')}</tbody></table></div>`;
+  // Sprung auf einen einzelnen Punkt (#/offen?punkt=P4) - von der Aufgabenliste aus.
+  const ziel = new URLSearchParams(location.hash.split('?')[1] || '').get('punkt');
+  const el = ziel && document.getElementById(`punkt-${ziel}`);
+  if (el) { el.classList.add('markiert'); setTimeout(() => el.scrollIntoView({ block: 'start' }), 0); }
 };
 
 /* ----------------------------------------------------------------- Dokumente */
@@ -1274,10 +1345,33 @@ SEITEN.dokument = async (z) => {
         <p><a href="#/uebersicht?${kontextAbfrage()}">Zur Übersicht</a></p></div>`;
     return;
   }
+  // Die PDF-Fassung entsteht auf dem Server aus demselben Markdown - zum
+  // Unterschreiben, Hinterlegen und Abheften.
+  const pdf = `/dokument/${encodeURIComponent(schluessel)}.pdf?${kontextAbfrage()}`;
+  const ansicht = d.pdf && /(^|&)ansicht=pdf(&|$)/.test(location.hash.split('?')[1] || '') ? 'pdf' : 'text';
   inhalt.innerHTML = `${kopf(d.titel, `<span class="mono">${esc(d.datei)}</span>`)}
-    ${d.format === 'text'
-      ? `<div class="vorformatiert">${esc(d.text)}</div>`
-      : `<div class="dok">${markdown(d.text)}</div>`}`;
+    ${d.pdf ? `<div class="dokleiste"><span class="seg" role="group" aria-label="Ansicht">
+        <button type="button" data-zeige="text">Text</button
+        ><button type="button" data-zeige="pdf">PDF</button></span>
+        <a class="knopf" href="${pdf}" target="_blank" rel="noopener">PDF in neuem Tab</a></div>` : ''}
+    <div class="dokansicht" data-ansicht="${ansicht}">
+      ${d.format === 'text'
+        ? `<div class="vorformatiert">${esc(d.text)}</div>`
+        : `<div class="dok nurtext">${markdown(d.text)}</div>`}
+      ${d.pdf ? '<div class="karte eng nurpdf"><iframe class="dokpdf" title="PDF"></iframe></div>' : ''}
+    </div>`;
+  const rahmen = inhalt.querySelector('.dokansicht');
+  const zeige = (art) => {
+    rahmen.dataset.ansicht = art;
+    inhalt.querySelectorAll('.dokleiste [data-zeige]').forEach((b) =>
+      b.setAttribute('aria-pressed', String(b.dataset.zeige === art)));
+    const f = inhalt.querySelector('iframe.dokpdf');
+    if (art === 'pdf' && f && !f.getAttribute('src')) f.src = `${pdf}#view=FitH`;
+  };
+  inhalt.querySelectorAll('.dokleiste [data-zeige]').forEach((b) => {
+    b.onclick = () => { zeige(b.dataset.zeige); setzeAbfrage('ansicht', b.dataset.zeige === 'pdf' ? 'pdf' : null); };
+  });
+  zeige(ansicht);
 };
 
 /* ------------------------------------------------------------- Umsatzsteuer */
@@ -1347,6 +1441,104 @@ SEITEN.ust = async () => {
       positiv heißt Zahllast, negativ Erstattungsanspruch. Die Zahlen kommen aus denselben
       Buchungen wie Bilanz und Gewinn- und Verlustrechnung — es gibt keine zweite Rechnung
       daneben.</p>`;
+};
+
+/* Zusammenfassende Meldungen: je Quartal, was an das BZSt zu melden ist (aus
+ * den Erlösbuchungen auf Kz 21) und was gemeldet wurde. Gemeldet werden volle
+ * Euro je Kunde; das BZSt gleicht die Summe gegen Kz 21 der Voranmeldung ab. */
+SEITEN.zm = async () => {
+  const d = await holen('/api/zm', true);
+  const offen = d.zeitraeume.filter((z) => z.status !== 'abgegeben' && !z.nur_historie);
+  const naechste = offen.map((z) => z.frist).filter(Boolean).sort()[0];
+  const zielLauf = (z) => (z.lauf ? `#/lauf/${encodeURIComponent(z.lauf)}?${kontextAbfrage()}` : null);
+
+  inhalt.innerHTML = `
+    ${kopf('Zusammenfassende Meldungen',
+      `Innergemeinschaftliche sonstige Leistungen an Unternehmer in anderen EU-Staaten, je
+       Quartal an das Bundeszentralamt für Steuern. ${esc(d.hinweis)}
+       Eine Zeile anklicken zeigt Kunden und Buchungen.`)}
+    <div class="kennzahlen">
+      ${kz('Offene Meldungen', String(offen.length), naechste ? `nächste Frist ${datum(naechste)}` : 'nichts fällig')}
+      ${kz('Gemeldet', String(d.zeitraeume.filter((z) => z.status === 'abgegeben').length),
+           `von ${d.zeitraeume.length} Quartalen`)}
+      ${kz('Weicht ab', String(d.zeitraeume.filter((z) => z.abweichend).length),
+           'übermittelt ≠ Buchführung heute')}
+    </div>
+    <div class="karte eng"><table class="t">
+      <thead><tr><th>Zeitraum</th><th>Stand</th><th class="z">Meldebetrag</th><th class="z">Kz 21</th>
+        <th>Kunden</th><th>Frist</th><th>Transferticket</th><th></th></tr></thead>
+      <tbody>${d.zeitraeume.map((z, i) => `
+        <tr class="${z.kunden.length ? 'klick' : ''}" data-zm="${i}">
+          <td class="nw"><span class="pfeil">${z.kunden.length ? '›' : ''}</span>
+            <strong>${esc(z.bezeichnung)}</strong>
+            <div class="klein still">${datum(z.von)} – ${datum(z.bis)}${z.nur_historie ? ' · nur Historie' : ''}</div></td>
+          <td><span class="marke-chip ${UST_STATUS[z.status]?.[0] || ''}">${esc(z.status)}</span>
+            ${z.abweichend ? `<span class="marke-chip warn">⚠ ${z.abweichend} weicht ab</span>`
+              : z.werte_erfasst ? '<span class="marke-chip gut">✓ stimmt</span>' : ''}
+            ${z.fehler ? `<div class="klein minus" style="max-width:40ch">${esc(z.fehler)}</div>` : ''}</td>
+          <td class="z">${z.meldebetrag_euro ? NF.format(z.meldebetrag_euro).replace(',00', '') + ' €' : '<span class="still">–</span>'}</td>
+          <td class="z ${z.kz21 === z.meldebetrag_euro ? '' : 'minus'}" title="Kz 21 der Voranmeldung desselben Quartals">${
+            z.nur_historie ? '<span class="still">–</span>' : NF.format(z.kz21).replace(',00', '') + ' €'}</td>
+          <td class="klein">${z.kunden.map((c) => `<span class="mono">${esc(c.ust_idnr)}</span>`).join(', ')
+            || '<span class="still">–</span>'}</td>
+          <td class="nw klein ${z.ueberfaellig ? 'minus' : ''}">${datum(z.frist)}${z.ueberfaellig ? '<div>überfällig</div>' : ''}</td>
+          <td class="mono klein leise">${esc(z.transferticket || '–')}
+            ${z.abgegeben_am ? `<div class="still">${datum(z.abgegeben_am)}</div>` : ''}</td>
+          <td class="z klein">${zielLauf(z) ? `<a href="${zielLauf(z)}" onclick="event.stopPropagation()">${
+              z.lauf_modus === 'senden' ? 'Übermittlung' : 'letzte Prüfung'} →</a>`
+            : z.status !== 'abgegeben' && !z.laeuft_noch && !z.nur_historie
+              ? `<button type="button" class="knopf" data-eric="pruefen" data-art="zm"
+                  data-jahr="${z.jahr}" data-zeitraum="${z.code}">prüfen</button>`
+              : z.laeuft_noch ? '<span class="still">läuft noch</span>' : ''}</td>
+        </tr>
+        <tr class="unterzeile" data-zm-unter="${i}" hidden><td colspan="8" class="einbau">
+          <table class="t">
+            <thead><tr><th>USt-IdNr.</th><th class="z">gebucht</th><th class="z">Meldebetrag</th>
+              <th class="z">übermittelt</th><th>Buchungen</th></tr></thead>
+            <tbody>${z.kunden.map((c) => `<tr>
+              <td class="mono">${esc(c.ust_idnr)}</td>
+              <td class="z">${eur(c.betrag)}</td>
+              <td class="z">${c.euro === null || c.euro === undefined ? '–' : c.euro + ' €'}</td>
+              <td class="z ${c.uebermittelt !== null && c.uebermittelt !== undefined
+                && String(c.uebermittelt) !== String(c.euro) ? 'minus' : ''}">${
+                c.uebermittelt === null || c.uebermittelt === undefined
+                  ? '<span class="still">nicht erfasst</span>' : esc(c.uebermittelt) + ' €'}</td>
+              <td><table class="t">${c.zeilen.map((r) => `
+                <tr class="klick" data-buchung="${r.nummer}">
+                  <td class="z still mono">${r.nummer}</td><td class="nw">${datum(r.datum)}</td>
+                  <td>${esc(r.buchungstext)}</td><td class="z">${eur(r.betrag)}</td></tr>`).join('')}
+              </table></td></tr>`).join('')}</tbody></table>
+          ${z.notiz ? `<p class="klein leise" style="margin:8px 0 0;max-width:80ch">${esc(z.notiz)}</p>` : ''}
+        </td></tr>`).join('') || '<tr><td colspan="8" class="still">Keine innergemeinschaftlichen Leistungen.</td></tr>'}
+      </tbody></table></div>
+    <p class="klein still" style="max-width:78ch">Meldebetrag: volle Euro je Kunde, abgeschnitten.
+      „übermittelt“ steht da, wo die gemeldeten Werte festgehalten sind — bei Abgaben über ERiC
+      immer, bei Abgaben von Hand in Mein ELSTER nur, wenn sie nachgetragen wurden.
+      Abgegeben wird unter ELSTER → Übermittlungen.</p>`;
+
+  inhalt.querySelectorAll('tr[data-zm]').forEach((tr) => {
+    tr.onclick = (ev) => {
+      if (ev.target.closest('button, a')) return;
+      const unten = inhalt.querySelector(`tr[data-zm-unter="${tr.dataset.zm}"]`);
+      const pfeil = tr.querySelector('.pfeil');
+      if (!unten || !pfeil.textContent) return;
+      unten.hidden = !pfeil.classList.toggle('offen');
+    };
+  });
+  inhalt.querySelectorAll('button[data-eric="pruefen"]').forEach((b) => {
+    b.onclick = () => ericAktion(b, 'pruefen',
+      { art: b.dataset.art, jahr: b.dataset.jahr, zeitraum: b.dataset.zeitraum });
+  });
+  inhalt.querySelectorAll('button[data-verwerfen]').forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true;
+      const grund = b.parentElement.querySelector('[data-grund]').value;
+      const r = await posten('/api/eric/verwerfen', { lauf: b.dataset.verwerfen, grund });
+      if (r.ok) { freigabezahlSetzen(); SEITEN.eric(); return; }
+      b.disabled = false;
+      b.insertAdjacentHTML('afterend', `<div class="aktionsfehler">${esc(r.fehler || 'Fehler')}</div>`);
+    };
+  });
 };
 
 SEITEN.ustva = async (z) => {
@@ -1485,6 +1677,751 @@ SEITEN.ustva = async (z) => {
   });
 };
 
+/* ------------------------------------------------- ELSTER-Übermittlungen */
+
+/* Was über ERiC an ELSTER ging, Lauf für Lauf, und daneben die Abgaben von
+ * Hand. Angezeigt wird, was auf der Platte liegt: der Datensatz Byte für Byte,
+ * die Antworten von ERiC und vom Annahmeserver. Die gelesene Ansicht baut der
+ * Browser mit seinem eigenen XML-Parser aus genau diesem Text - sie kann vom
+ * Rohtext nicht abweichen, weil es keinen zweiten Weg zu ihr gibt. */
+
+const ERIC_ART = { ustva: ['UStVA', 'Umsatzsteuer-Voranmeldung'], zm: ['ZM', 'Zusammenfassende Meldung'],
+  kst: ['KSt', 'Körperschaftsteuererklärung'], gewst: ['GewSt', 'Gewerbesteuererklärung'],
+  ebilanz: ['E-Bilanz', 'E-Bilanz'], eroeffnung: ['Eröffnungsbilanz', 'E-Bilanz (Eröffnungsbilanz)'] };
+const ERIC_MODUS = {
+  pruefen: ['', 'lokal geprüft'], test: ['test', 'Test'], senden: ['gut', 'Abgabe'],
+  abgabe: ['', 'Abgabe'],
+};
+const ERIC_STATUS = {
+  angenommen: 'gut', plausibel: 'gut', abgegeben: 'gut',
+  'nicht plausibel': 'schlecht', abgelehnt: 'schlecht', abgebrochen: 'schlecht',
+};
+
+function zeitpunkt(iso) {
+  if (!iso) return '';
+  const s = String(iso);
+  return s.length > 10 ? `${datum(s)} ${s.slice(11, 16)}` : datum(s);
+}
+
+/** Betrag im Format des Datensatzes ("169.29", "1500") deutsch schreiben -
+ * nur umgesetzt, nicht gerechnet. */
+function xmlZahl(s) {
+  if (s === null || s === undefined) return '<span class="still">–</span>';
+  const m = String(s).match(/^(-?)(\d+)(?:\.(\d+))?$/);
+  if (!m) return esc(s);
+  const ganz = m[2].replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return `${m[1]}${ganz}${m[3] ? ',' + m[3] : ''}`;
+}
+
+function abgleichChip(n, ohneWerte) {
+  if (ohneWerte) return '<span class="marke-chip">Werte nicht erfasst</span>';
+  if (n === null || n === undefined) return '<span class="still">–</span>';
+  return n === 0 ? '<span class="marke-chip gut">✓ stimmt</span>'
+    : `<span class="marke-chip warn">⚠ ${n} weicht ab</span>`;
+}
+
+function laufLink(id) {
+  return `#/lauf/${encodeURIComponent(id)}?${kontextAbfrage()}`;
+}
+
+/** Eine ERiC-Aktion aus einem Knopf heraus: Knopf sperren, Ergebnis-Lauf öffnen,
+ * Fehler neben dem Knopf zeigen. */
+async function ericAktion(knopf, aktion, daten, meldung) {
+  const alle = inhalt.querySelectorAll('button[data-eric]');
+  alle.forEach((b) => { b.disabled = true; });
+  const text = knopf.textContent;
+  knopf.textContent = { pruefen: 'prüft …', test: 'sendet Test …', senden: 'übermittelt …' }[aktion];
+  if (meldung) meldung.innerHTML = '';
+  const r = await posten(`/api/eric/${aktion}`, daten);
+  if (r.ok && r.lauf) { location.hash = laufLink(r.lauf); return; }
+  alle.forEach((b) => { b.disabled = false; });
+  knopf.textContent = text;
+  const ziel = meldung || knopf.parentElement;
+  ziel.innerHTML = `<div class="aktionsfehler">${esc(r.fehler || 'Unbekannter Fehler')}${
+    r.lauf ? ` · <a href="${laufLink(r.lauf)}">Lauf ansehen</a>` : ''}${
+    r.neu_laden ? ' <button type="button" class="knopf" onclick="location.reload()">Seite neu laden</button>' : ''}</div>`;
+}
+
+/** Was vor dem Vorlegen geprüft wurde — aufklappbar, damit die Karte kurz bleibt. */
+function pruefpunkteListe(punkte) {
+  if (!punkte || !punkte.length) return '';
+  return `<details class="pruefpunkte"><summary class="klein">✓ ${punkte.length} Prüfpunkt${punkte.length > 1 ? 'e' : ''}
+    vor dem Vorlegen</summary><ul>${punkte.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></details>`;
+}
+
+/** Eine vorgelegte Übermittlung: warum, was sich ändert, wie weit sie ist. */
+function vorschlagKarte(v, abweichend) {
+  const [, lang] = ERIC_ART[v.art] || [v.art, v.art];
+  const p = v.vorschlag;
+  const schritt = (fertig, text, wann) => `<li class="${fertig ? 'fertig' : ''}">
+    <span class="haken">${fertig ? '✓' : '○'}</span> ${text}${wann ? ` <span class="still">${wann}</span>` : ''}</li>`;
+  const offen = v.stand === 'offen';
+  return `<div class="karte vorschlag" data-vorschlag="${esc(v.id)}">
+    <div class="vkopf">
+      <div><strong>${esc(lang)} ${esc(v.bezeichnung)}</strong>
+        <div class="klein still">vorgelegt von ${esc(p.von)} am ${zeitpunkt(p.zeit)}</div></div>
+      <div class="z">${v.betrag_cent !== null && v.betrag_cent !== undefined
+        ? `<div class="zahl">${eur(v.betrag_cent)}</div>
+           <div class="klein still">${esc({ ebilanz: 'Bilanzsumme', eroeffnung: 'Bilanzsumme', kst: 'zu versteuerndes Einkommen',
+                                             gewst: 'Gewinn aus Gewerbebetrieb' }[v.art] || 'Betrag')}</div>` : ''}</div>
+    </div>
+    <p style="margin:10px 0;max-width:82ch">${esc(p.grund)}</p>
+    ${p.aenderungen && p.aenderungen.length ? `<table class="t" style="margin-bottom:10px">
+      <thead><tr><th>Was</th><th class="z">beim Finanzamt</th><th class="z">neu</th></tr></thead>
+      <tbody>${p.aenderungen.map((a) => `<tr><td>${esc(a.was)}</td>
+        <td class="z mono still">${esc(a.bisher)}</td><td class="z mono"><strong>${esc(a.neu)}</strong></td></tr>`).join('')}
+      </tbody></table>` : ''}
+    ${pruefpunkteListe(p.pruefpunkte)}
+    <ol class="schritte">
+      ${schritt(true, `<a href="${laufLink(v.id)}">lokal geprüft</a>, fehlerfrei`, zeitpunkt(v.geprueft))}
+      ${schritt(!!v.test, v.test ? `<a href="${laufLink(v.test.id)}">Test an ELSTER</a> angenommen${
+        v.test.testzertifikat ? ' (SDK-Zertifikat)' : ''}` : 'Test an ELSTER', v.test ? zeitpunkt(v.test.zeit) : '')}
+      ${schritt(!!v.abgabe, v.abgabe ? `<a href="${laufLink(v.abgabe.id)}">abgegeben</a>, Ticket
+        <span class="mono">${esc(v.abgabe.transferticket || '')}</span>` : 'Abgabe — von Ihnen freigegeben',
+        v.abgabe ? zeitpunkt(v.abgabe.zeit) : '')}
+    </ol>
+    ${v.stand === 'überholt' ? `<p class="minus klein">Überholt: eine neuere Prüfung ergab einen anderen
+      Datensatz — die Buchführung hat sich bewegt. <a href="${laufLink(v.neuere_pruefung)}">Neueste Prüfung</a>
+      ansehen; vorgelegt ist sie nicht.</p>` : ''}
+    ${abweichend ? `<p class="minus klein">⚠ ${abweichend} Wert(e) weichen inzwischen von der Buchführung ab.</p>` : ''}
+    ${v.stand === 'verworfen' ? `<p class="klein still">Verworfen am ${zeitpunkt(p.verworfen.zeit)}${
+      p.verworfen.grund ? `: ${esc(p.verworfen.grund)}` : ''}.</p>` : ''}
+    ${offen ? `<div class="werkzeug" style="gap:8px;margin:10px 0 0">
+      <a class="knopf an" href="${laufLink(v.freigabe_lauf)}">${v.test ? 'Ansehen und abgeben →' : 'Ansehen, testen, abgeben →'}</a>
+      <details class="verwerfen"><summary class="knopf">verwerfen</summary>
+        <span><input type="text" placeholder="warum (optional)" data-grund>
+        <button type="button" class="knopf" data-verwerfen="${esc(v.id)}">verwerfen</button></span></details>
+    </div>` : ''}
+  </div>`;
+}
+
+SEITEN.eric = async () => {
+  const [d, o] = await Promise.all([holen('/api/eric', true), holen('/api/eric/offen', true)]);
+  const z = d.zeilen;
+  const vorschlaege = o.vorschlaege || [];
+  const freigabe = vorschlaege.filter((v) => v.stand === 'offen' || v.stand === 'überholt');
+  const erledigteVorschlaege = vorschlaege.filter((v) => !freigabe.includes(v));
+  const abweichungVon = (id) => (z.find((r) => r.id === id) || {}).abweichend || 0;
+  const abgaben = z.filter((r) => (r.modus === 'senden' && r.status === 'angenommen')
+                               || (r.weg === 'hand' && r.status === 'abgegeben'));
+  const tests = z.filter((r) => r.modus === 'test');
+  // Eine Abweichung zählt nur, wo sie etwas bedeutet: bei dem, was ans Finanzamt
+  // ging, und bei der neuesten Prüfung je Zeitraum. Ältere Prüfungen sind
+  // Entwürfe — dass sie von der heutigen Buchführung abweichen, ist ihr Wesen.
+  const neueste = new Set();
+  const gesehen = new Set();
+  z.forEach((r) => {                                   // neueste zuerst
+    const k = `${r.jahr}|${r.zeitraum}|${r.art}`;
+    if (r.weg === 'eric' && r.modus === 'pruefen' && !gesehen.has(k)) { gesehen.add(k); neueste.add(r.id); }
+  });
+  const zaehlt = (r) => (r.modus === 'senden' && r.status === 'angenommen')
+    || (r.weg === 'hand' && r.status === 'abgegeben') || neueste.has(r.id);
+  const abweichend = z.filter((r) => r.abweichend > 0 && zaehlt(r));
+  const alteEntwuerfe = z.filter((r) => r.abweichend > 0 && !zaehlt(r)).length;
+  // Der Filter bleibt in der Seite: ein eigenes Adressfragment je Filter
+  // würde der Router als dieselbe Seite erkennen und nicht neu zeichnen.
+  const gruppe = { senden: 'abgaben', abgabe: 'abgaben', test: 'tests', pruefen: 'pruefungen' };
+  // Standard sind die echten Abgaben; Tests und lokale Prüfungen auf Knopfdruck
+  const knopf = (k, t) => `<button type="button" class="knopf ${k === 'abgaben' ? 'an' : ''}"
+      data-nur="${k}">${t}</button>`;
+  const ziel = (r) => (r.weg === 'eric' ? `#/lauf/${encodeURIComponent(r.id)}?${kontextAbfrage()}`
+    : `#/ustva/${r.jahr}/${r.zeitraum}?mandant=${encodeURIComponent(KONTEXT.mandant)}&jahr=${r.jahr}`);
+
+  inhalt.innerHTML = `
+    ${kopf('ELSTER-Übermittlungen',
+      `Alles, was an ELSTER ging — über ERiC oder von Hand in Mein ELSTER. Ein Lauf öffnet
+       den Datensatz, wie er an ERiC ging, die Prüfung davor, die Antwort von ELSTER und den
+       Abgleich mit der Buchführung von heute. Abgeben: oben „prüfen“, dann auf der Seite der
+       Prüfung testen und freigeben — oder im Terminal mit <span class="mono">bh eric</span>.`)}
+    <div class="kennzahlen">
+      ${kz('Abgegeben', String(abgaben.length),
+           `davon ${abgaben.filter((r) => r.weg === 'eric').length} über ERiC`)}
+      ${kz('Testsendungen', String(tests.length),
+           tests.length ? `${tests.filter((r) => r.status === 'angenommen').length} angenommen` : '')}
+      ${kz('Weicht von der Buchführung ab', String(abweichend.length),
+           (abweichend.map((r) => `${r.label} ${ERIC_ART[r.art][0]}`).join(', ') || 'nichts')
+           + (alteEntwuerfe ? ` · Abgaben und neueste Prüfungen; ${alteEntwuerfe} ältere Prüfung${
+             alteEntwuerfe > 1 ? 'en' : ''} nicht gezählt` : ''))}
+    </div>
+    ${freigabe.length || erledigteVorschlaege.length ? `
+    <h2 id="zur-freigabe">Zur Freigabe <span class="still klein">${freigabe.length
+      ? `${freigabe.length} vorgelegt` : 'nichts offen'}</span></h2>
+    <p class="klein still" style="max-width:78ch;margin-top:-4px">Vorbereitet und lokal geprüft, aber nicht
+      gesendet. Jede Karte sagt, warum es den Datensatz gibt und was er beim Finanzamt ändert.
+      Testen und abgeben tun Sie auf der Seite der Prüfung — dort steht der Datensatz, die Vorschau
+      und der Abgleich mit der Buchführung.</p>
+    ${freigabe.map((v) => vorschlagKarte(v, abweichungVon(v.id))).join('')}
+    ${erledigteVorschlaege.length ? `<details class="karte"><summary class="klein">Erledigt oder verworfen
+      (${erledigteVorschlaege.length})</summary>${erledigteVorschlaege.map((v) => vorschlagKarte(v, 0)).join('')}</details>` : ''}
+    ` : ''}
+
+    <h2>Abzugeben</h2>
+    <div class="karte eng">${o.zeilen.length ? `<table class="t">
+      <thead><tr><th>Zeitraum</th><th>Art</th><th class="z">Betrag</th><th>Frist</th>
+        <th title="ERiC prüft lokal, nichts verlässt den Rechner">Lokal geprüft</th>
+        <th title="An ELSTER gesendet mit Testmerker - angenommen und wieder gelöscht">Test an ELSTER</th><th></th></tr></thead>
+      <tbody>${o.zeilen.map((r) => `<tr>
+        <td class="nw"><strong>${esc(r.label)}</strong></td>
+        <td>${ERIC_ART[r.art][1]}</td>
+        <td class="z">${eur(r.betrag_cent)}</td>
+        <td class="nw klein ${!r.laeuft_noch && r.frist && r.frist < new Date().toISOString().slice(0, 10) ? 'minus' : ''}">${r.berichtigung
+          ? '<span class="marke-chip warn" title="Schon abgegeben; eine zweite Übermittlung vor dem Bescheid ersetzt die erste">Berichtigung</span>'
+          : datum(r.frist)}</td>
+        <td class="klein">${r.pruefung ? `<a href="${laufLink(r.pruefung.id)}">${zeitpunkt(r.pruefung.zeit)}</a>
+          <span class="marke-chip ${r.pruefung.ok ? 'gut' : 'schlecht'}">${r.pruefung.ok ? 'plausibel' : 'Fehler'}</span>`
+          : '<span class="still">–</span>'}</td>
+        <td class="klein">${r.test ? `<a href="${laufLink(r.test.id)}">${zeitpunkt(r.test.zeit)}</a>
+          <span class="marke-chip ${r.test.angenommen ? 'gut' : 'schlecht'}">${r.test.angenommen ? 'angenommen' : 'abgelehnt'}</span>${
+            r.test.testzertifikat ? ' <span class="marke-chip" title="Mit dem Testzertifikat des ERiC-SDK, nicht mit Ihrem - zählt nicht als Test vor der Abgabe">SDK-Zertifikat</span>' : ''}`
+          : '<span class="still">–</span>'}</td>
+        <td class="z">${r.laeuft_noch ? '<span class="klein still">Zeitraum läuft noch</span>'
+          : `<button type="button" class="knopf" data-eric="pruefen" data-art="${r.art}"
+              data-jahr="${r.jahr}" data-zeitraum="${r.zeitraum}">${r.pruefung ? 'neu prüfen' : 'prüfen'}</button>`}</td>
+      </tr>`).join('')}</tbody></table>` : '<p class="klein" style="margin:12px 14px">Nichts offen.</p>'}</div>
+    <p class="klein still" style="max-width:78ch">„Lokal geprüft“: ERiC prüft die Meldung auf diesem
+      Rechner mit denselben Regeln wie der ELSTER-Server — nichts wird gesendet. „Test an ELSTER“:
+      die Meldung geht mit Ihrem Zertifikat und Testmerker an ELSTER, wird angenommen und gelöscht —
+      das prüft Zertifikat, PIN und Übertragung. Getestet und abgegeben wird auf der Seite der Prüfung.</p>
+
+    <h2>Verlauf</h2>
+    <div class="werkzeug">${knopf('alle', 'Alle')}${knopf('abgaben', 'Abgaben')}
+      ${knopf('tests', 'Tests')}${knopf('pruefungen', 'Lokale Prüfungen')}</div>
+    <div class="karte eng"><table class="t">
+      <thead><tr><th>Zeitraum</th><th>Art</th><th>Weg</th><th>Modus</th><th>Zeitpunkt</th>
+        <th>Transferticket</th><th>Ergebnis</th><th>Abgleich</th></tr></thead>
+      <tbody>${z.map((r) => `
+        <tr class="klick" data-gruppe="${gruppe[r.modus] || ''}" onclick="location.hash='${ziel(r)}'">
+          <td class="nw"><strong>${esc(r.label)}</strong>${r.berichtigt ? ' <span class="marke-chip">berichtigt</span>' : ''}</td>
+          <td><a href="${ziel(r)}">${ERIC_ART[r.art]?.[0] || esc(r.art)}</a></td>
+          <td class="klein">${r.weg === 'eric' ? 'ERiC' : 'Mein ELSTER'}</td>
+          <td><span class="marke-chip ${ERIC_MODUS[r.modus]?.[0] || ''}">${ERIC_MODUS[r.modus]?.[1] || esc(r.modus)}</span></td>
+          <td class="nw klein">${zeitpunkt(r.zeit)}</td>
+          <td class="mono klein leise">${r.transferticket
+            ? `${esc(r.transferticket.slice(0, 6))}…${esc(r.transferticket.slice(-4))}` : '–'}</td>
+          <td><span class="marke-chip ${ERIC_STATUS[r.status] || ''}">${esc(r.status)}</span>
+            ${r.fehler ? `<span class="marke-chip schlecht">${r.fehler} Fehler</span>` : ''}
+            ${r.hinweise ? `<span class="marke-chip warn">${r.hinweise} Hinweis${r.hinweise > 1 ? 'e' : ''}</span>` : ''}</td>
+          <td>${r.abweichend > 0 && !zaehlt(r)
+            ? `<span class="marke-chip" title="Ältere Prüfung — seitdem neu geprüft">überholt</span>`
+            : abgleichChip(r.abweichend, r.weg === 'hand' && !r.werte_erfasst)}
+            ${r.weg === 'eric' && !r.unveraendert ? '<span class="marke-chip schlecht">Datei verändert</span>' : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="8" class="still">Noch nichts übermittelt.</td></tr>'}</tbody>
+    </table></div>
+    <p class="klein still" style="max-width:78ch">Bei Abgaben von Hand liegt kein Datensatz vor.
+      Abgeglichen wird gegen die übermittelten Werte, sofern sie in der Datenbank festgehalten
+      sind; sonst stehen nur Transferticket und Notiz in der Voranmeldung. Über ERiC
+      gesendete Abgaben halten ihre Werte selbst fest.</p>`;
+
+  inhalt.querySelectorAll('button[data-eric="pruefen"]').forEach((b) => {
+    b.onclick = () => ericAktion(b, 'pruefen',
+      { art: b.dataset.art, jahr: b.dataset.jahr, zeitraum: b.dataset.zeitraum });
+  });
+  const filtern = (nur) => {
+    inhalt.querySelectorAll('[data-nur]').forEach((x) => x.classList.toggle('an', x.dataset.nur === nur));
+    inhalt.querySelectorAll('tr[data-gruppe]').forEach((tr) => {
+      tr.hidden = nur !== 'alle' && tr.dataset.gruppe !== nur;
+    });
+  };
+  inhalt.querySelectorAll('[data-nur]').forEach((b) => {
+    b.onclick = () => filtern(b.dataset.nur);
+  });
+  filtern('abgaben');
+};
+
+/** XML zweimal: gelesen (aufklappbarer Baum) und roh. `markiert(name)` färbt
+ * die Elemente, deren Werte aus der Buchführung stammen - in beiden Ansichten. */
+/** Ein Wert im Klartext: Beträge in Euro, ISO-Daten deutsch, Auswahlwerte in Worten. */
+function klartextWert(z) {
+  if (z.leer) return '<span class="still">leer übermittelt</span>';
+  const roh = z.wert || '';
+  let haupt = esc(roh);
+  if (z.betrag && /^-?\d+([.,]\d+)?$/.test(roh)) {
+    const zahl = Number(roh.replace(',', '.'));
+    const nachkomma = /[.,]\d+$/.test(roh) ? 2 : 0;
+    haupt = `${zahl.toLocaleString('de-DE', { minimumFractionDigits: nachkomma, maximumFractionDigits: nachkomma })} €`;
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(roh)) {
+    haupt = roh.split('-').reverse().join('.');
+  } else if (/^\d{8}$/.test(roh) && /datum|stichtag/i.test(z.text || '')) {
+    haupt = `${roh.slice(6)}.${roh.slice(4, 6)}.${roh.slice(0, 4)}`;
+  } else if (roh === 'true' || roh === 'false') {
+    haupt = roh === 'true' ? 'ja' : 'nein';
+  }
+  if (!roh && !z.wert_text) return '<span class="still">–</span>';
+  return z.wert_text ? `${esc(z.wert_text)} <span class="mono still klein">${haupt}</span>` : haupt;
+}
+
+/** Der Datensatz, wie ihn ein Mensch liest: Vordruck, Zeile, Wortlaut, Wert. */
+function klartextAnsicht(k, markiert) {
+  if (!k) return '';
+  if (k.fehler) return `<p class="minus klein" style="margin:12px 14px">Klartext nicht lesbar: ${esc(k.fehler)}</p>`;
+  const zeilen = (liste) => {
+    let vorher = null;
+    return liste.map((z) => {
+      const kopf = z.abschnitt && z.abschnitt !== vorher
+        ? `<tr class="kt-abschnitt"><td colspan="4">${esc(z.abschnitt)}</td></tr>` : '';
+      vorher = z.abschnitt;
+      const mark = markiert(z.pfad && z.pfad.includes(':') ? z.pfad : z.feld, !z.leer && !!z.wert);
+      return `${kopf}<tr class="${mark ? 'mark' : ''}">
+        <td class="z mono klein still">${esc(z.zeile || '')}</td>
+        <td>${z.text ? esc(z.text) : `<span class="still">${esc(z.feld)}</span>`}${z.ungefaehr
+          ? ' <span class="still" title="Bezeichnung aus dem Elementnamen übersetzt, nicht amtlich">≈</span>' : ''}</td>
+        <td class="z kt-wert${z.betrag ? ' nw' : ''}${(z.wert || '').length > 40 ? ' kt-lang' : ''}">${klartextWert(z)}</td>
+        <td class="mono klein still kt-feld" title="${esc(z.pfad || '')}">${esc(z.feld)}</td></tr>`;
+    }).join('');
+  };
+  const gruppe = (g) => {
+    const voll = g.zeilen.filter((z) => !z.leer);
+    const leer = g.zeilen.filter((z) => z.leer);
+    const inhalt = `<table class="t kt">
+      <thead><tr><th class="z">Zeile</th><th>Angabe</th><th class="z">Wert</th><th>Feld</th></tr></thead>
+      <tbody>${zeilen(voll)}</tbody></table>
+      ${leer.length ? `<details class="kt-leer"><summary class="klein still">${leer.length} Position${leer.length > 1 ? 'en' : ''}
+        ohne Wert übermittelt (Mussfelder der Taxonomie)</summary><table class="t kt"><tbody>${zeilen(leer)}</tbody></table></details>` : ''}`;
+    return g.technisch
+      ? `<details class="kt-gruppe"><summary><strong>${esc(g.titel)}</strong></summary>${inhalt}</details>`
+      : `<div class="kt-gruppe"><h4>${esc(g.titel)}</h4>${inhalt}</div>`;
+  };
+  return `${k.gruppen.map(gruppe).join('')}
+    <p class="klein still" style="margin:10px 14px">${k.quelle
+      ? `Wortlaut, Zeilennummern und Auswahlwerte aus der Jahresdokumentation des ERiC-SDK
+         (<span class="mono">${esc(k.quelle)}</span>).`
+      : k.sdk === false ? 'Die Dokumentation des ERiC-SDK wurde nicht gefunden — ohne sie bleiben nur die Feldnamen. ERIC_DOKU setzen (docs/eric.md).'
+        : ''} ≈ = Bezeichnung aus dem Elementnamen übersetzt, nicht amtlich.</p>`;
+}
+
+function xmlAnsicht(text, markiert = () => false, klartext = null) {
+  if (!text || !text.trim()) return '<div class="still klein" style="padding:12px 14px">leer</div>';
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  const kaputt = doc.querySelector('parsererror');
+  const knoten = (el) => {
+    const attr = [...el.attributes].map((a) =>
+      `<span class="attr">${esc(a.name)} = ${esc(a.value)}</span>`).join('');
+    const kinder = [...el.children];
+    if (!kinder.length) {
+      const t = el.textContent;
+      return `<div class="blatt${markiert(el.tagName, el.getAttribute('xsi:nil') !== 'true') ? ' mark' : ''}">
+        <span class="n">${esc(el.tagName)}${attr}</span>${t.trim()
+          ? `<span class="w">${esc(t)}</span>` : '<span class="w leer">leer</span>'}</div>`;
+    }
+    return `<details open><summary>${esc(el.tagName)}${attr}<span class="anz">${kinder.length}</span></summary>
+      <div>${kinder.map(knoten).join('')}</div></details>`;
+  };
+  const muster = /<\s*([A-Za-z0-9_.:-]+)[\s>/]/;
+  const roh = text.split('\n').map((z) => {
+    const m = z.match(muster);
+    return m && markiert(m[1], !/nil="true"/.test(z)) ? `<mark>${esc(z)}</mark>` : esc(z);
+  }).join('\n');
+  const mitKlartext = klartext && (klartext.gruppen?.length || klartext.fehler);
+  return `<div class="xmlansicht" data-ansicht="${mitKlartext ? 'klartext' : kaputt ? 'roh' : 'gelesen'}">
+    <div class="xmlleiste">
+      <span class="seg" role="group" aria-label="Ansicht">
+        <button type="button" data-zeige="gelesen" ${kaputt ? 'disabled' : ''}>Gelesen</button
+        ><button type="button" data-zeige="roh">Roh</button
+        >${mitKlartext ? '<button type="button" data-zeige="klartext">Klartext</button>' : ''}</span>
+      <span class="nurgelesen"><button type="button" class="knopf" data-alle="auf">alle auf</button>
+        <button type="button" class="knopf" data-alle="zu">alle zu</button></span>
+      ${kaputt ? '<span class="marke-chip schlecht">kein gültiges XML — nur roh</span>' : ''}
+    </div>
+    <div class="baum">${kaputt ? '' : knoten(doc.documentElement)}</div>
+    ${mitKlartext ? `<div class="klartext">${klartextAnsicht(klartext, markiert)}</div>` : ''}
+    <pre class="xmlroh">${roh}</pre></div>`;
+}
+
+function xmlAnsichtenVerdrahten() {
+  inhalt.querySelectorAll('.xmlansicht').forEach((x) => {
+    x.querySelectorAll('[data-zeige]').forEach((b) => {
+      b.onclick = () => { x.dataset.ansicht = b.dataset.zeige; };
+    });
+    x.querySelectorAll('[data-alle]').forEach((b) => {
+      b.onclick = () => x.querySelectorAll('.baum details').forEach((d) => {
+        d.open = b.dataset.alle === 'auf';
+      });
+    });
+  });
+}
+
+function meldungsTabelle(liste) {
+  if (!liste.length) return '<p class="klein" style="margin:0">Keine Fehler, keine Hinweise.</p>';
+  return `<table class="t">
+    <thead><tr><th>Art</th><th>Feld</th><th>Meldung</th><th>Regel</th><th>Wirkung</th></tr></thead>
+    <tbody>${liste.map((m) => `<tr>
+      <td><span class="marke-chip ${m.art === 'fehler' ? 'schlecht' : 'warn'}">${m.art === 'fehler' ? 'Fehler' : 'Hinweis'}</span></td>
+      <td>${m.feld_kurz ? `<span class="mono">${esc(m.feld_kurz)}</span>` : '<span class="still">–</span>'}
+        ${m.feld ? `<div class="klein still mono" style="white-space:normal;word-break:break-all">${esc(m.feld)}</div>` : ''}</td>
+      <td>${esc(m.text)}</td>
+      <td class="mono klein">${esc(m.id || '–')}${m.regel
+        ? `<div class="still" style="white-space:normal;word-break:break-all">${esc(m.regel.split('/').pop())}</div>` : ''}</td>
+      <td class="klein">${m.art === 'fehler' ? 'sperrt das Senden' : 'sperrt nicht — lesen'}</td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+SEITEN.lauf = async (z) => {
+  const id = z.param[0];
+  const d = await holen(`/api/eric/lauf?lauf=${encodeURIComponent(id)}`, true);
+  const l = d.lauf;
+  const [kurz, lang] = ERIC_ART[l.art] || [l.art, l.art];
+  const datei = (n) => mitKontext(`/eric/datei?lauf=${encodeURIComponent(id)}&datei=${n}`);
+  const vp = d.vorpruefung.meldungen;
+  const an = d.antwort.meldungen;
+  const fehlerZahl = (vp.length ? vp : an).filter((m) => m.art === 'fehler').length;
+  const hinweisZahl = (vp.length ? vp : an).filter((m) => m.art === 'hinweis').length;
+  // Kz 09 trägt die Hersteller-ID, Kz 10/22/26/29 sind Ankreuzfelder - keine Werte aus Buchungen
+  const markiert = (n, mitWert) => (/^Kz\d\d$/.test(n) && !['Kz09', 'Kz10', 'Kz22', 'Kz26', 'Kz29'].includes(n))
+    || n === 'Testmerker' || n === 'knre' || n === 'betrag'
+    // E-Bilanz: nur Positionen mit Wert, nicht die leer berichteten Mussfelder
+    || (mitWert && /^de-gaap-ci:(bs|is|BVV)\./.test(n))
+    // KSt/GewSt: Felder mit Wert (E8002001 …)
+    || (mitWert && /^E\d{7}$/.test(n))
+    || n === 'de-gaap-ci:detailedInformation.accountbalances.amount';
+  const ab = d.abgleich;
+  const s = d.server;
+
+  const zertifikat = l.testzertifikat ? 'dem Testzertifikat des ERiC-SDK'
+    : l.zertifikat ? `<span class="mono">${esc(l.zertifikat)}</span>` : null;
+  const was = {
+    pruefen: 'Nur geprüft: ERiC hat den Datensatz lokal plausibilisiert, nichts hat den Rechner verlassen.',
+    test: 'Ein Testfall: ELSTER hat ihn geprüft, angenommen und gelöscht — kein Finanzamt sieht ihn.',
+    senden: 'Die Abgabe an die Finanzverwaltung, ohne Testmerker.',
+  }[l.modus];
+
+  const vorSenden = l.modus === 'pruefen' ? `
+    <h2>Vor dem Senden: Plausibilitätsprüfung</h2>
+    <div class="kennzahlen">
+      ${kz('Fehler', `<span class="${fehlerZahl ? 'minus' : 'plus'}">${fehlerZahl}</span>`, 'sperren das Senden')}
+      ${kz('Hinweise', `<span style="color:var(--warn)">${hinweisZahl}</span>`, 'sperren nicht — bitte lesen')}
+      ${kz('Geprüft', zeitpunkt(l.zeit), `ERiC ${esc(l.eric || '?')}`)}
+    </div>
+    <div class="karte ${an.length ? 'eng' : ''}">${meldungsTabelle(an)}</div>
+    ${abgabeAblauf(d, id, fehlerZahl, hinweisZahl, lang)}
+` : `
+    <h2>Vorher: Plausibilitätsprüfung</h2>
+    <div class="karte ${vp.length ? 'eng' : ''}">${l.vorpruefung
+      ? meldungsTabelle(vp)
+      : '<p class="klein still" style="margin:0">Für diesen Lauf gibt es keine gesonderte Vorprüfung — er stammt aus der Zeit, bevor sie vor jedem Senden lief.</p>'}</div>`;
+
+  inhalt.innerHTML = `
+    ${kopf(`${lang} ${l.bezeichnung}`, '',
+      `<a href="#/eric">ELSTER-Übermittlungen</a> › ${esc(l.label)} › ${esc(kurz)} ›
+       ${ERIC_MODUS[l.modus]?.[1] || esc(l.modus)} vom ${zeitpunkt(l.zeit)}`)}
+    <div class="werkzeug" style="gap:6px">
+      <span class="marke-chip ${ERIC_MODUS[l.modus]?.[0] || ''}">${ERIC_MODUS[l.modus]?.[1]}${
+        d.testmerker ? ` · Testmerker ${esc(d.testmerker)}` : ' · ohne Testmerker'}</span>
+      <span class="marke-chip ${ERIC_STATUS[d.status] || ''}">${esc(d.status)}</span>
+      ${l.berichtigt ? '<span class="marke-chip">berichtigte Anmeldung</span>' : ''}
+      ${ab && ab.abweichend !== null ? (ab.abweichend
+        ? `<span class="marke-chip warn">⚠ ${ab.abweichend} weicht von der Buchführung ab</span>`
+        : '<span class="marke-chip gut">✓ stimmt mit der Buchführung</span>') : ''}
+      <span class="marke-chip ${d.unveraendert ? 'gut' : 'schlecht'}">${d.unveraendert
+        ? '✓ Datei unverändert' : '✕ Datei verändert'}</span>
+    </div>
+    <p class="unter" style="max-width:82ch">${was}
+      ${zertifikat ? `Gesendet mit ${zertifikat}, ` : ''}ERiC ${esc(l.eric || '?')}, über
+      <span class="mono">bh eric ${esc(l.modus)}</span>.
+      ${l.abgebrochen ? `<strong class="minus">Abgebrochen: ${esc(l.abgebrochen)}.</strong>` : ''}
+      ${l.nachgetragen ? `<span class="still">${esc(l.nachgetragen)}</span>` : ''}</p>
+    ${d.vorschlag ? `<div class="karte vorschlag-hinweis"><strong>${{
+        offen: 'Zur Freigabe vorgelegt', 'überholt': 'Vorgelegt, aber überholt', ersetzt: 'Durch einen neueren Vorschlag ersetzt',
+        abgegeben: 'Vorgelegt und abgegeben', verworfen: 'Vorgelegt und verworfen' }[d.vorschlag.stand]}</strong>
+      <span class="klein still">von ${esc(d.vorschlag.vorschlag.von)} am ${zeitpunkt(d.vorschlag.vorschlag.zeit)}</span>
+      <p style="margin:6px 0 0;max-width:82ch">${esc(d.vorschlag.vorschlag.grund)}</p>
+      ${(d.vorschlag.vorschlag.aenderungen || []).length ? `<table class="t" style="margin-top:8px">
+        <thead><tr><th>Was</th><th class="z">beim Finanzamt</th><th class="z">neu</th></tr></thead>
+        <tbody>${d.vorschlag.vorschlag.aenderungen.map((a) => `<tr><td>${esc(a.was)}</td>
+          <td class="z mono still">${esc(a.bisher)}</td><td class="z mono"><strong>${esc(a.neu)}</strong></td></tr>`).join('')}
+        </tbody></table>` : ''}
+      ${pruefpunkteListe(d.vorschlag.vorschlag.pruefpunkte)}
+      ${d.vorschlag.stand === 'offen' && d.vorschlag.freigabe_lauf !== id
+        ? `<p class="klein" style="margin:8px 0 0"><a href="${laufLink(d.vorschlag.freigabe_lauf)}">Zur neuesten Prüfung desselben Datensatzes →</a> dort wird abgegeben.</p>` : ''}
+    </div>` : ''}
+    ${l.modus === 'test' && d.neueste_pruefung && d.stand.status !== 'abgegeben'
+      ? `<div class="karte"><a href="${laufLink(d.neueste_pruefung)}">Weiter zur Abgabe →</a>
+          <span class="klein still">auf der Seite der neuesten Prüfung</span></div>` : ''}
+
+    ${vorSenden}
+
+    <h2>Abgleich: Buchführung heute ↔ Datensatz</h2>
+    <div class="karte eng">${ab && ab.fehler ? `<p class="minus" style="margin:12px 14px">${esc(ab.fehler)}</p>` : `
+      <table class="t">
+        <thead><tr><th>${{ zm: 'USt-IdNr.', ebilanz: 'Position', eroeffnung: 'Position', kst: 'Feld', gewst: 'Feld' }[l.art] || 'Kz'}</th>${l.art === 'ustva' ? '<th>Bezeichnung</th>' : ''}
+          <th class="z">Buchführung heute</th><th class="z">im Datensatz</th><th class="z">Abgleich</th></tr></thead>
+        <tbody>${(ab ? ab.zeilen : []).map((r) => `
+          <tr class="${r.gleich ? '' : 'abweichung'}">
+            <td class="mono">${l.art === 'ustva'
+              ? `<a href="#/ustva/${l.jahr}/${l.zeitraum}">${esc(r.kz)}</a>` : esc(r.kz)}</td>
+            ${l.art === 'ustva' ? `<td>${esc(r.bezeichnung)}</td>` : ''}
+            <td class="z">${xmlZahl(r.buch)}</td>
+            <td class="z mono">${r.gesendet === null || r.gesendet === undefined
+              ? '<span class="still">–</span>' : esc(r.gesendet)}</td>
+            <td class="z ${r.gleich ? 'plus' : 'minus'}">${r.gleich ? '✓' : '≠'}</td></tr>`).join('')}
+        </tbody></table>`}</div>
+    <p class="klein still" style="max-width:78ch">„Im Datensatz“ steht so, wie es in der XML-Datei
+      steht; „Buchführung heute“ ist neu aus den Buchungen gerechnet.${l.art === 'ustva'
+        ? ' Ein Klick auf die Kennzahl führt zu den Buchungen dahinter.' : ''}</p>
+
+    <h2>Datensatz, wie er an ERiC übergeben wurde</h2>
+    <div class="karte eng">
+      ${xmlAnsicht(d.datensatz, markiert, d.klartext)}
+      <div class="klein still" style="padding:8px 14px;border-top:1px solid var(--linie)">
+        Gelb: Werte aus der Buchführung und der Testmerker. Die gelesene Ansicht ist der Rohtext,
+        vom Browser zerlegt — ohne Ergänzung, ohne Umrechnung. ERiC verschlüsselt den Datensatz
+        anschließend und füllt Transferticket und Transportschlüssel im Kopf.
+        <a href="${datei('datensatz.xml')}" target="_blank" rel="noopener">Datei öffnen</a></div>
+    </div>
+
+    ${l.modus !== 'pruefen' ? `
+    <h2>Antwort von ELSTER</h2>
+    <div class="karte">${s && s.lesbar ? `
+      <dl class="feld">
+        <dt>Ergebnis</dt><dd>${s.rueckgaben.map((r) => `<span class="mono">${esc(r.code)}</span> ${esc(r.text)}`).join('<br>')
+          || '<span class="still">keine Rückgabe</span>'}</dd>
+        <dt>Transferticket</dt><dd class="mono">${esc(s.transferticket || '–')}</dd>
+        <dt>Eingang</dt><dd>${zeitpunkt(s.eingang) || '–'}</dd>
+        <dt>Testmerker</dt><dd class="mono">${esc(s.testmerker || 'keiner — echte Abgabe')}</dd>
+      </dl>` : `<p class="klein still" style="margin:0">${l.abgebrochen
+        ? 'Nichts gesendet, deshalb keine Antwort.' : 'Keine lesbare Antwort des Annahmeservers.'}</p>`}</div>
+    ${s && s.xml ? `<div class="karte eng">${xmlAnsicht(s.xml)}</div>` : ''}` : ''}
+
+    <h2>Rückgabe von ERiC zum Lauf</h2>
+    <div class="karte ${an.length ? 'eng' : ''}">${l.ergebnis
+      ? `${an.length ? meldungsTabelle(an) : `<p class="klein" style="margin:0"><span class="mono">${esc(l.ergebnis.code)}</span>
+          ${esc(l.ergebnis.text || (l.ergebnis.ok ? 'ohne Beanstandung' : ''))}</p>`}`
+      : '<p class="klein still" style="margin:0">ERiC wurde nicht aufgerufen.</p>'}</div>
+    ${d.antwort.xml ? `<div class="karte eng">${xmlAnsicht(d.antwort.xml)}</div>` : ''}
+    ${d.vorpruefung.xml ? `<h3>Prüfantwort der Vorprüfung</h3><div class="karte eng">${xmlAnsicht(d.vorpruefung.xml)}</div>` : ''}
+
+    <h2>Unversehrtheit</h2>
+    <div class="karte"><dl class="feld" style="grid-template-columns:150px 1fr">
+      <dt>SHA-256 beim Lauf</dt><dd class="mono" style="word-break:break-all">${esc(l.datensatz.sha256)}</dd>
+      <dt>SHA-256 jetzt</dt><dd class="mono ${d.unveraendert ? 'plus' : 'minus'}" style="word-break:break-all">${esc(d.sha256_jetzt || 'Datei fehlt')}</dd>
+      <dt>Größe</dt><dd>${l.datensatz.bytes.toLocaleString('de-DE')} Byte, UTF-8</dd>
+      <dt>Ablage</dt><dd class="mono klein">mandanten/${esc(KONTEXT.mandant)}/${esc(id)}/</dd>
+    </dl>
+    <p class="klein still" style="margin:10px 0 0;max-width:78ch">Die Prüfsumme wird beim Lauf über
+      genau den Text gebildet, der an ERiC ging, und beim Öffnen dieser Seite neu über die Datei.
+      Stimmen beide überein, ist die Datei seitdem unverändert.</p></div>
+
+    ${d.protokoll ? `
+    <h2>${l.modus === 'pruefen' ? 'Vorschau' : 'Übertragungsprotokoll'} (von ERiC gedruckt)</h2>
+    <div class="karte eng"><iframe class="protokoll" src="${datei('protokoll.pdf')}#view=FitH"
+      title="Protokoll"></iframe>
+      <div class="klein" style="padding:8px 14px;border-top:1px solid var(--linie)">
+        <a href="${datei('protokoll.pdf')}" target="_blank" rel="noopener">in neuem Tab öffnen</a>
+        <span class="still"> · ERiC setzt das PDF aus dem Datensatz selbst — eine zweite,
+        unabhängige Lesart derselben Zahlen.</span></div></div>` : ''}`;
+
+  xmlAnsichtenVerdrahten();
+  abgabeVerdrahten(d, id);
+};
+
+/** Die drei Schritte zur Abgabe, auf der Seite der Prüfung. Jeder Schritt baut
+ * die Meldung neu aus der Buchführung; abgegeben wird nur, wenn sie Byte für
+ * Byte der hier angezeigten Fassung entspricht. */
+function abgabeAblauf(d, id, fehlerZahl, hinweisZahl, lang) {
+  const l = d.lauf;
+  const daten = `data-art="${l.art}" data-jahr="${l.jahr}" data-zeitraum="${l.zeitraum}"`;
+  const neu = `<button type="button" class="knopf" data-eric="pruefen" ${daten}>neu prüfen</button>`;
+  if (d.stand.status === 'abgegeben') {
+    return `<div class="karte"><p style="margin:0">${esc(lang)} ${esc(l.bezeichnung)} ist abgegeben
+      (Transferticket <span class="mono">${esc(d.stand.transferticket || '')}</span>,
+      ${datum(d.stand.abgegeben_am)}). Eine Berichtigung geht als berichtigte Meldung über
+      <span class="mono">bh eric senden … --berichtigt</span>.</p></div>`;
+  }
+  if (d.neueste_pruefung !== id) {
+    return `<div class="karte"><p style="margin:0">Es gibt eine neuere Prüfung dieses Zeitraums.
+      Abgegeben wird nur die neueste: <a href="${laufLink(d.neueste_pruefung)}">zur neuesten Prüfung</a>.</p></div>`;
+  }
+  if (fehlerZahl) {
+    return `<div class="karte"><p style="margin:0 0 10px">Erst die Fehler in der Buchführung beheben,
+      dann neu prüfen. Mit Fehlern lässt ERiC nichts senden.</p>${neu}</div>`;
+  }
+  const t = d.letzter_test;
+  // Ein Test zählt, wenn er mit dem eigenen Zertifikat angenommen wurde und - bis auf
+  // den Testmerker - genau diese Meldung war, egal ob vor oder nach der Prüfung.
+  const testOk = t && t.angenommen && !t.testzertifikat && t.gleicher_datensatz;
+  return `<div class="karte abgabe">
+    <ol class="schritte">
+      <li class="erledigt"><strong>Geprüft</strong> — diese Seite: ${fehlerZahl} Fehler, ${hinweisZahl}
+        Hinweis${hinweisZahl === 1 ? '' : 'e'}. Bitte Abgleich und Datensatz unten ansehen.
+        <div style="margin-top:6px">${neu}</div></li>
+      <li class="${testOk ? 'erledigt' : ''}"><strong>Testweise senden</strong> <span class="still">(empfohlen)</span> —
+        mit Ihrem Zertifikat und Testmerker. ELSTER prüft, nimmt an und löscht; das Finanzamt sieht nichts.
+        <div style="margin-top:6px">${testOk
+          ? `<span class="marke-chip gut">angenommen</span> <a href="${laufLink(t.id)}">Test vom ${zeitpunkt(t.zeit)}</a>`
+          : `<button type="button" class="knopf" data-eric="test" ${daten}>testweise senden</button>`}</div>
+        <div class="aktionsmeldung" data-meldung="test"></div></li>
+      <li><strong>Abgeben</strong> — ohne Testmerker an die Finanzverwaltung.
+        <label class="bestaetigung"><input type="checkbox" data-gelesen>
+          Ich habe Prüfergebnis, Abgleich und Datensatz auf dieser Seite gelesen und gebe
+          ${esc(lang)} ${esc(l.bezeichnung)} so frei.</label>
+        <label class="bestaetigung">${{ ebilanz: 'Bilanzsumme', eroeffnung: 'Bilanzsumme', kst: 'Zu versteuerndes Einkommen',
+          gewst: 'Gewinn aus Gewerbebetrieb' }[l.art] || 'Betrag'} zur Bestätigung eintippen
+          (<span class="mono">${esc(d.betrag_text)}</span>):
+          <input type="text" inputmode="decimal" autocomplete="off" data-betrag
+            placeholder="${esc(d.betrag_text)}" style="width:9em"></label>
+        <div style="margin-top:8px"><button type="button" class="knopf scharf" data-eric="senden"
+          ${daten} disabled>Verbindlich an ELSTER übermitteln</button></div>
+        <div class="aktionsmeldung" data-meldung="senden"></div>
+        <p class="klein still" style="margin:8px 0 0;max-width:78ch">Vor dem Senden baut der Server die
+          Meldung neu aus der Buchführung und sendet nur, wenn sie mit dieser Prüfung übereinstimmt
+          (SHA-256 <span class="mono">${esc(l.datensatz.sha256.slice(0, 12))}…</span>) und die
+          Vorprüfung keine Fehler findet. Eine Abgabe lässt sich nicht zurücknehmen, nur berichtigen.</p></li>
+    </ol></div>`;
+}
+
+function abgabeVerdrahten(d, id) {
+  inhalt.querySelectorAll('button[data-eric="pruefen"]').forEach((b) => {
+    b.onclick = () => ericAktion(b, 'pruefen', { art: b.dataset.art, jahr: b.dataset.jahr,
+                                                 zeitraum: b.dataset.zeitraum });
+  });
+  const test = inhalt.querySelector('button[data-eric="test"]');
+  if (test) {
+    test.onclick = () => ericAktion(test, 'test', { art: test.dataset.art, jahr: test.dataset.jahr,
+      zeitraum: test.dataset.zeitraum }, inhalt.querySelector('[data-meldung="test"]'));
+  }
+  const senden = inhalt.querySelector('button[data-eric="senden"]');
+  if (!senden) return;
+  const haken = inhalt.querySelector('[data-gelesen]');
+  const betrag = inhalt.querySelector('[data-betrag]');
+  const normal = (v) => v.replace(/[.\s€]/g, '');
+  const pruefen = () => {
+    senden.disabled = !(haken.checked && normal(betrag.value) === d.betrag_text);
+  };
+  haken.onchange = pruefen;
+  betrag.oninput = pruefen;
+  senden.onclick = () => {
+    if (senden.disabled) return;
+    ericAktion(senden, 'senden', { art: senden.dataset.art, jahr: senden.dataset.jahr,
+      zeitraum: senden.dataset.zeitraum, pruefung: id, gelesen: haken.checked,
+      betrag: betrag.value }, inhalt.querySelector('[data-meldung="senden"]'));
+  };
+}
+
+/* ------------------------------------------------------------ ELSTER-Postfach */
+
+/* Was Finanzamt und BZSt ins Postfach von Mein ELSTER legen, abgeholt über
+ * ERiC (bh eric postfach). Angezeigt wird der Inhalt so, wie er kam: PDF als
+ * PDF, XML gelesen und roh. */
+
+const POSTFACH_ART = {
+  WIdNrVA: 'Mitteilung der Wirtschafts-Identifikationsnummer',
+  DivaEinwilligungRM: 'Rückmeldung zur elektronischen Bekanntgabe',
+  EPMitteilung: 'Mitteilung', EPKurzmitteilung: 'Kurzmitteilung', EPBescheid: 'Bescheid',
+  EBilanzRueckmeldung: 'Rückmeldung zur E-Bilanz', AnhangRueckmeldung: 'Rückmeldung zu Anhängen',
+};
+const POSTFACH_META = {
+  steuernummer: 'Steuernummer', bescheiddatum: 'Bescheiddatum', erstelldatum: 'Erstellt',
+  geschaeftszeichen: 'Geschäftszeichen', finanzamt: 'Finanzamt', sendername: 'Absender',
+  bezeichnungnachricht: 'Bezeichnung', veranlagungsjahr: 'Veranlagungsjahr',
+  verfuegbarbis: 'Abholbar bis', lieferticket: 'Lieferticket', bundesland: 'Land',
+};
+
+function metaDatum(v) {
+  return /^\d{8}$/.test(v || '') ? `${v.slice(6)}.${v.slice(4, 6)}.${v.slice(0, 4)}` : v;
+}
+
+function postfachDatum(m) {
+  return metaDatum(m.bescheiddatum || m.erstelldatum || '');
+}
+
+function postfachLink(pfad) {
+  return `#/nachricht/${encodeURIComponent(pfad)}?${kontextAbfrage()}`;
+}
+
+SEITEN.postfach = async () => {
+  const d = await holen('/api/postfach', true);
+  inhalt.innerHTML = `
+    ${kopf('ELSTER-Postfach',
+      `Was Finanzamt und Bundeszentralamt dem ELSTER-Konto bereitstellen — Mitteilungen,
+       Bescheide, Rückmeldungen —, abgeholt über ERiC mit dem Zertifikat aus mandant.json.`)}
+    <div class="werkzeug">
+      <button type="button" class="knopf" data-eric="postfach">Postfach abrufen</button>
+      <span class="klein still" data-meldung="postfach"></span>
+    </div>
+    <div class="karte eng"><table class="t">
+      <thead><tr><th>Datum</th><th>Art</th><th>Inhalt</th><th>Steuernummer</th><th>Abgeholt</th></tr></thead>
+      <tbody>${d.zeilen.map((r) => `
+        <tr class="klick" onclick="location.hash='${postfachLink(r.pfad)}'">
+          <td class="nw">${postfachDatum(r.meta) || '<span class="still">–</span>'}</td>
+          <td><a href="${postfachLink(r.pfad)}">${esc(POSTFACH_ART[r.datenart] || r.datenart)}</a>
+            <div class="klein still mono">${esc(r.datenart)}</div></td>
+          <td class="klein" style="max-width:52ch">${esc(r.kurztext || r.meta.geschaeftszeichen
+            || r.meta.bezeichnungnachricht || '')}${r.anhaenge && r.anhaenge.length
+            ? ` <span class="marke-chip">${r.anhaenge.length} Anhang</span>` : ''}</td>
+          <td class="mono klein">${esc(r.meta.steuernummer || '')}</td>
+          <td class="nw klein">${zeitpunkt(r.abgeholt_am)}
+            ${r.bestaetigung && r.bestaetigung.code === '0' ? '<span class="marke-chip gut">bestätigt</span>'
+              : '<span class="marke-chip warn">nicht bestätigt</span>'}</td>
+        </tr>`).join('') || '<tr><td colspan="5" class="still">Noch nichts abgeholt.</td></tr>'}</tbody>
+    </table></div>
+    <p class="klein still" style="max-width:78ch">„Postfach abrufen“ fragt ELSTER, was bereitliegt,
+      holt Neues mit allen Anhängen ab, legt es unter
+      <span class="mono">mandanten/${esc(KONTEXT.mandant)}/elster/postfach/</span> ab und bestätigt
+      danach den Empfang — so verlangt es ELSTER. Schon Abgeholtes wird nicht erneut geladen.</p>`;
+
+  const b = inhalt.querySelector('button[data-eric="postfach"]');
+  b.onclick = async () => {
+    const m = inhalt.querySelector('[data-meldung="postfach"]');
+    b.disabled = true;
+    b.textContent = 'ruft ab …';
+    const r = await posten('/api/eric/postfach', {});
+    if (!r.ok) {
+      b.disabled = false;
+      b.textContent = 'Postfach abrufen';
+      m.innerHTML = `<span class="minus">${esc(r.fehler || 'Fehler')}</span>`;
+      return;
+    }
+    await SEITEN.postfach();
+    inhalt.querySelector('[data-meldung="postfach"]').textContent =
+      `${r.neu.length} neu, ${r.vorhanden.length} schon vorhanden.`;
+  };
+};
+
+SEITEN.nachricht = async (z) => {
+  const id = z.param[0];
+  const d = await holen(`/api/postfach/nachricht?id=${encodeURIComponent(id)}`, true);
+  const datei = (n) => mitKontext(`/postfach/datei?id=${encodeURIComponent(id)}&datei=${encodeURIComponent(n)}`);
+  const titel = POSTFACH_ART[d.datenart] || d.datenart;
+  const meta = Object.entries(d.meta).map(([k, v]) => `<dt>${esc(POSTFACH_META[k] || k)}</dt>
+    <dd class="${/ticket|id$|Id$/.test(k) ? 'mono klein' : ''}">${esc(metaDatum(v))}</dd>`).join('');
+  inhalt.innerHTML = `
+    ${kopf(titel, '', `<a href="#/postfach">ELSTER-Postfach</a> › ${esc(postfachDatum(d.meta) || d.id)}`)}
+    <div class="werkzeug" style="gap:6px">
+      <span class="marke-chip mono">${esc(d.datenart)}</span>
+      ${d.bestaetigung && d.bestaetigung.code === '0' ? '<span class="marke-chip gut">Empfang bestätigt</span>'
+        : '<span class="marke-chip warn">Empfang nicht bestätigt</span>'}
+      <span class="marke-chip">abgeholt ${zeitpunkt(d.abgeholt_am)}</span>
+    </div>
+    ${d.kurztext ? `<div class="karte"><p style="margin:0;max-width:80ch;font-size:14px">${esc(d.kurztext)}</p></div>` : ''}
+
+    <h2>Inhalt</h2>
+    ${d.inhaltsart === 'pdf' ? `<div class="karte eng">
+        <iframe class="protokoll" src="${datei('datenpaket')}#view=FitH" title="Inhalt"></iframe>
+        <div class="klein" style="padding:8px 14px;border-top:1px solid var(--linie)">
+          <a href="${datei('datenpaket')}" target="_blank" rel="noopener">in neuem Tab öffnen</a></div></div>`
+      : d.inhaltsart === 'xml' ? `<div class="karte eng">${xmlAnsicht(d.inhalt.trim())}</div>`
+      : d.inhalt ? `<div class="rohtext">${esc(d.inhalt)}</div>`
+      : '<p class="still">Kein Inhalt geliefert.</p>'}
+
+    ${d.anhaenge.length ? `<h2>Anhänge</h2><div class="karte eng"><table class="t">
+      <thead><tr><th>Datei</th><th>Bezeichnung</th><th>Typ</th><th class="z">Größe</th></tr></thead>
+      <tbody>${d.anhaenge.map((a) => `<tr>
+        <td>${a.datei ? `<a href="${datei(a.datei)}" target="_blank" rel="noopener">${esc(a.dateiname)}</a>`
+          : esc(a.dateiname)}</td>
+        <td>${esc(a.bezeichnung || '')}</td><td class="klein">${esc(a.typ || '')}</td>
+        <td class="z klein">${(a.groesse || 0).toLocaleString('de-DE')} Byte</td></tr>`).join('')}
+      </tbody></table></div>` : ''}
+
+    <h2>Angaben von ELSTER</h2>
+    <div class="karte"><dl class="feld" style="grid-template-columns:170px 1fr">${meta}
+      <dt>Bereitstellung</dt><dd class="mono klein">${esc(d.id)}</dd>
+      ${d.bereitstellungsticket ? `<dt>Bereitstellungsticket</dt><dd class="mono klein">${esc(d.bereitstellungsticket)}</dd>` : ''}
+      <dt>Empfangsbestätigung</dt><dd>${d.bestaetigung ? `<span class="mono">${esc(d.bestaetigung.code)}</span>
+        ${esc(d.bestaetigung.text || '')}` : '–'}</dd>
+      <dt>Ablage</dt><dd class="mono klein">mandanten/${esc(KONTEXT.mandant)}/elster/postfach/${esc(id)}/</dd>
+    </dl></div>`;
+  xmlAnsichtenVerdrahten();
+};
+
 /* ---------------------------------------------------------- Schublade Buchung */
 
 async function schubladeOeffnen(nummer) {
@@ -1610,6 +2547,11 @@ function markdown(text) {
     .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>')
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
 
+  // Endet eine Zeile auf \ oder zwei Leerzeichen, bricht sie um - wie in bhl/druck.py.
+  // Erst zusammenfuegen, dann formatieren - Fettdruck darf ueber zwei Zeilen laufen.
+  const zeilenText = (teile) => inline(teile.map((t, n) => t.replace(/\\$/, '').trimEnd()
+    + (n < teile.length - 1 ? (/(\\|  )$/.test(t) ? '\u0000' : ' ') : '')).join('')).replace(/\u0000/g, '<br>');
+
   const listeZu = () => { if (liste) { aus.push(`</${liste}>`); liste = null; } };
 
   while (i < zeilen.length) {
@@ -1631,8 +2573,10 @@ function markdown(text) {
       const rumpf = [];
       i += 2;
       while (i < zeilen.length && zeilen[i].includes('|')) { rumpf.push(zellen(zeilen[i])); i++; }
-      aus.push(`<table><thead><tr>${kopfZellen.map((c, n) =>
-        `<th${bund[n] || ''}>${inline(c)}</th>`).join('')}</tr></thead><tbody>${rumpf.map((r) =>
+      // Eine leere Kopfzeile (`| | |`) ist nur Markdown-Pflicht, keine Ueberschrift.
+      const kopfHtml = kopfZellen.every((c) => !c) ? '' : `<thead><tr>${kopfZellen.map((c, n) =>
+        `<th${bund[n] || ''}>${inline(c)}</th>`).join('')}</tr></thead>`;
+      aus.push(`<table>${kopfHtml}<tbody>${rumpf.map((r) =>
         `<tr>${r.map((c, n) => `<td${bund[n] || ''}>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
       continue;
     }
@@ -1641,8 +2585,14 @@ function markdown(text) {
     if (li) {
       const art = /\d/.test(li[1]) ? 'ol' : 'ul';
       if (liste !== art) { listeZu(); aus.push(`<${art}>`); liste = art; }
-      aus.push(`<li>${inline(li[2])}</li>`);
-      i++; continue;
+      const teile = [li[2]];
+      i++;
+      // eingerueckte Folgezeilen gehoeren noch zum Listenpunkt
+      while (i < zeilen.length && /^\s+\S/.test(zeilen[i]) && !/^\s*([-*+]|\d+\.)\s+/.test(zeilen[i])) {
+        teile.push(zeilen[i].trim()); i++;
+      }
+      aus.push(`<li>${zeilenText(teile)}</li>`);
+      continue;
     }
 
     if (/^>\s?/.test(z)) {
@@ -1661,11 +2611,243 @@ function markdown(text) {
            && !zeilen[i].includes('|')) {
       absatz.push(zeilen[i]); i++;
     }
-    aus.push(`<p>${inline(absatz.join(' '))}</p>`);
+    aus.push(absatz.join(' ').trim() === '&nbsp;' ? '<p>&nbsp;</p>' : `<p>${zeilenText(absatz)}</p>`);
   }
   listeZu();
   return aus.join('\n');
 }
+
+/* ----------------------------------------------------------- Deine Aufgaben */
+
+/** Wie weit eine Frist entfernt ist - in Worten, nicht als Datum allein. */
+function abstand(frist, heute) {
+  if (!frist) return '';
+  const t = Math.round((new Date(frist) - new Date(heute)) / 86400000);
+  return t < 0 ? `${-t} Tage über der Frist` : t === 0 ? 'heute' : t === 1 ? 'morgen' : `in ${t} Tagen`;
+}
+
+const AUFGABE_ART = {
+  abgabe: ['Abgabe', 'schlecht'], punkt: ['', ''], frist: ['Frist', 'schlecht'],
+  belege: ['Belege', 'warn'], platzhalter: ['Platzhalter', 'schlecht'],
+};
+
+function aufgabeHtml(a, heute) {
+  const art = a.art === 'punkt' ? (PUNKT_ART[a.punkt_art] || ['Punkt', '']) : AUFGABE_ART[a.art];
+  const zustand = a.zustand === 'bereit'
+    ? '<span class="marke-chip gut">bereit zum Absenden</span>'
+    : a.zustand === 'blockiert' ? '<span class="marke-chip schlecht">blockiert</span>'
+    : a.zustand === 'laeuft' ? '<span class="marke-chip">Geschäftsjahr läuft noch</span>' : '';
+  const wartet = (a.wartet_auf || []).map((id) =>
+    `<a class="marke-chip" href="#/offen?punkt=${esc(id)}">wartet auf ${esc(id)}</a>`).join(' ');
+  const blockiert = (a.blockiert_titel || []).length
+    ? `<span class="marke-chip schlecht">blockiert ${a.blockiert_titel.map(esc).join(' · ')}</span>` : '';
+  const belege = (a.belege || []).length ? `<ul class="klein">${a.belege.map((b) =>
+    `<li>${datum(b.datum)} · ${esc(b.buchungstext)} · ${eur(b.betrag_cent)} EUR
+      ${b.beschaffung ? `<span class="still">— ${esc(b.beschaffung)}</span>` : ''}</li>`).join('')}</ul>` : '';
+  return `<div class="aufgabe ${a.ueberfaellig ? 'ueberfaellig' : ''} ${a.prioritaet || ''}">
+    <div class="wann">${a.frist ? `<strong>${datum(a.frist)}</strong>${abstand(a.frist, heute)}
+        ${a.frist_geerbt ? '<div class="klein still" title="Frist der Abgabe, die auf diesen Punkt wartet">Frist der Abgabe</div>' : ''}`
+      : '<span class="still">ohne Frist</span>'}</div>
+    <div>
+      <div class="titel">${a.quelle ? `<span class="mono still klein">${esc(a.quelle)}</span> ` : ''}
+        <a href="${a.verweis || '#/offen'}">${esc(a.titel)}</a></div>
+      <div class="tun">${a.aktion ? esc(a.aktion)
+        : '<span class="still">Was zu tun ist, steht noch nicht fest — Befund lesen.</span>'}</div>
+      ${(a.hindernisse || []).length ? `<ul class="klein">${a.hindernisse.map((h) =>
+          `<li class="leise">${esc(h)}</li>`).join('')}</ul>` : ''}
+      ${belege}
+      <div class="neben">${art && art[0] ? `<span class="marke-chip ${art[1]}">${esc(art[0])}</span>` : ''}
+        ${zustand} ${wartet} ${blockiert}
+        ${a.status === 'teilweise' ? '<span class="marke-chip warn">teilweise erledigt</span>' : ''}</div>
+    </div></div>`;
+}
+
+SEITEN.aufgaben = async () => {
+  const d = await holen('/api/aufgaben');
+  const z = d.zaehler;
+  const ueberfaellig = d.aufgaben.filter((a) => a.ueberfaellig);
+  const bald = d.aufgaben.filter((a) => !a.ueberfaellig && a.frist
+    && (new Date(a.frist) - new Date(d.heute)) / 86400000 <= 45);
+  const spaeter = d.aufgaben.filter((a) => !a.ueberfaellig && !bald.includes(a));
+  const gruppe = (titel, unter, liste) => liste.length ? `<h2>${esc(titel)}
+      <span class="still">(${liste.length})</span></h2>${unter ? `<p class="unter">${unter}</p>` : ''}
+      ${liste.map((a) => aufgabeHtml(a, d.heute)).join('')}` : '';
+  inhalt.innerHTML = `
+    ${kopf(`Deine Aufgaben · ${esc(d.mandant.name)}`,
+      `Alles, was eine Handlung oder Entscheidung von dir braucht — eingesammelt aus Abgaben,
+       Fristen, offenen Punkten, Platzhaltern und fehlenden Belegen des Geschäftsjahres ${d.jahr}.
+       Ein Punkt ohne eigene Frist trägt die Frist der Abgabe, die auf ihn wartet.`)}
+    <div class="offen-kopf">
+      ${kz('Aufgaben', `<span class="zahl ${z.aufgaben ? 'minus' : 'plus'}">${z.aufgaben}</span>`,
+           `${z.entscheidungen} davon Entscheidungen oder Klärungen`)}
+      ${kz('Überfällig', `<span class="zahl ${z.ueberfaellig ? 'minus' : 'plus'}">${z.ueberfaellig}</span>`,
+           z.ueberfaellig ? 'Frist abgelaufen' : 'keine Frist abgelaufen')}
+      ${kz('Nächste Frist', d.naechste_frist ? datum(d.naechste_frist) : '–',
+           d.naechste_frist ? abstand(d.naechste_frist, d.heute) : '')}
+      ${kz('Im Blick', String(z.im_blick), 'liefern Dritte oder die Anwendung')}
+    </div>
+    ${gruppe('Überfällig', '', ueberfaellig)}
+    ${gruppe('In den nächsten sechs Wochen', '', bald)}
+    ${gruppe('Danach oder ohne Frist', '', spaeter)}
+    ${!d.aufgaben.length ? '<div class="karte">Nichts zu tun.</div>' : ''}
+    ${d.im_blick.length ? `<h2>Im Blick behalten <span class="still">(${d.im_blick.length})</span></h2>
+      <p class="unter">Hier muss jemand anderes liefern — ein Dritter oder die Anwendung. Nachfassen, wenn es ausbleibt.</p>
+      ${d.im_blick.map((a) => aufgabeHtml(a, d.heute)).join('')}` : ''}`;
+};
+
+/* ------------------------------------------------------------------ Abgaben */
+
+const ZUSTAND = {
+  erledigt: ['erledigt', 'gut'], bereit: ['bereit zum Absenden', 'gut'],
+  blockiert: ['blockiert', 'schlecht'], laeuft: ['Geschäftsjahr läuft noch', ''],
+};
+
+SEITEN.abgaben = async () => {
+  const d = await holen('/api/abgaben');
+  const unterlage = (u) => u.art === 'dokument'
+    ? `<a class="marke-chip" href="#/dokument/${u.ziel}">${esc(u.titel)}</a>`
+    : `<a class="marke-chip" href="#/${u.ziel}">${esc(u.titel)}</a>`;
+  const karte = (a) => `<div class="abgabe ${a.zustand}">
+    <div class="kopfzeile">
+      <span class="titel">${esc(a.titel)}</span>
+      <span class="rechts">
+        <span class="marke-chip ${ZUSTAND[a.zustand][1]}">${ZUSTAND[a.zustand][0]}</span>
+        ${a.zustand === 'erledigt'
+          ? (a.erledigt_am ? `<span class="marke-chip">${datum(a.erledigt_am)}</span>` : '')
+          : `<span class="marke-chip ${a.tage < 0 ? 'schlecht' : a.tage <= 30 ? 'warn' : ''}">bis ${datum(a.frist)}</span>`}
+      </span></div>
+    <div class="meta">${esc(a.empfaenger || '')} · ${esc(a.weg || '')}</div>
+    <div class="meta still">${esc(a.grundlage)}${a.gesetzlich_faellig
+      ? ` · gesetzlich ${datum(a.gesetzlich_faellig)}` : ''}${a.notiz ? ` · ${esc(a.notiz)}` : ''}</div>
+    ${a.formulare.length ? `<div style="margin-top:8px">${a.formulare.map((f) =>
+      `<a class="marke-chip ${f.bereit ? 'gut' : 'warn'}" href="#/elster?formular=${f.id}"
+         title="${esc(f.name)}">${f.bereit ? '✓' : f.offen + ' offen'} · ${esc(f.titel)}</a>`).join(' ')}</div>` : ''}
+    ${a.hindernisse.length ? `<ul class="liste">${a.hindernisse.map((h) => `<li>${h.punkt
+        ? `<a href="#/offen?punkt=${esc(h.punkt)}" class="mono">${esc(h.punkt)}</a> ` : ''}${
+        h.verweis ? `<a href="${h.verweis}">${esc(h.text)}</a>` : esc(h.text)}${
+        h.aktion ? `<div class="klein leise">→ ${esc(h.aktion)}</div>` : ''}</li>`).join('')}</ul>` : ''}
+    ${a.schritt && a.schritt.aktion ? `<div class="schritt"><strong>Nächster Schritt
+        (${esc(a.schritt.punkt)}):</strong> ${esc(a.schritt.aktion)}</div>` : ''}
+    ${a.unterlagen.length ? `<div style="margin-top:8px">${a.unterlagen.map(unterlage).join(' ')}</div>` : ''}
+  </div>`;
+  inhalt.innerHTML = `
+    ${kopf(`Abgaben ${d.jahr}`,
+      `Was für das Geschäftsjahr abzugeben ist, an wen, auf welchem Weg und bis wann — und woran
+       jede Abgabe noch hängt. „Bereit“ heißt: alles da, es fehlt nur das Absenden.
+       Erledigt ist, was in <span class="mono">fristen.csv</span> mit Nachweis steht.`)}
+    <div class="offen-kopf">
+      ${kz('Blockiert', `<span class="zahl ${d.zaehler.blockiert ? 'minus' : 'plus'}">${d.zaehler.blockiert}</span>`, 'warten auf etwas')}
+      ${kz('Bereit', String(d.zaehler.bereit), 'nur noch absenden')}
+      ${d.zaehler.laeuft ? kz('Noch nicht dran', String(d.zaehler.laeuft), 'Geschäftsjahr läuft') : ''}
+      ${kz('Erledigt', `<span class="zahl plus">${d.zaehler.erledigt}</span>`, 'mit Nachweis')}
+    </div>
+    ${d.abgaben.map(karte).join('')}`;
+};
+
+/* --------------------------------------------------------- ELSTER-Ausfüllhilfe */
+
+SEITEN.elster = async () => {
+  const d = await holen('/api/elster');
+  if (d.fehler) { inhalt.innerHTML = kopf('ELSTER-Ausfüllhilfe', esc(d.fehler)); return; }
+  const fokus = new URLSearchParams(location.hash.split('?')[1] || '').get('formular');
+  const feld = (x, fi, xi) => {
+    if (!('wert' in x)) {
+      return `<tr class="ueberschrift"><td colspan="4">${esc(x.gruppe)}</td></tr>`;
+    }
+    const kn = x.konten || [];
+    const s = `e${fi}f${xi}`;
+    const eintrag = x.format === 'text' ? esc(x.eintrag ?? '')
+      : x.format === 'cent' ? eur(x.eintrag) : (x.eintrag === null ? '' : NF.format(x.eintrag).replace(',00', ''));
+    return `<tr>
+      <td class="zeile">${esc(x.zeile || '')}</td>
+      <td class="${kn.length ? 'aufklapp' : ''}" ${kn.length ? `data-auf="${s}"` : ''}>
+        ${kn.length ? '<span class="pfeil">›</span> ' : ''}${esc(x.feld)}
+        ${kn.length ? `<span class="still klein"> · ${kn.join(' ')}</span>` : ''}
+        ${x.offen_punkt ? `<div><a class="marke-chip schlecht" href="#/offen?punkt=${esc(x.offen_punkt.id)}"
+            >hängt an ${esc(x.offen_punkt.id)}: ${esc(x.offen_punkt.titel)}</a></div>` : ''}
+        ${x.hinweis ? `<div class="klein leise" style="max-width:70ch">${esc(x.hinweis)}</div>` : ''}</td>
+      <td class="eintrag ${x.format === 'text' ? 'text' : ''}">${eintrag}</td>
+      <td class="z klein still">${x.format === 'euro' && x.betrag_cent !== null ? eur(x.betrag_cent) : ''}</td></tr>
+      ${kn.length ? einbauZeile(s, kn, 4) : ''}`;
+  };
+  const formular = (f, fi) => `
+    <h2 id="formular-${f.id}">${esc(f.titel)} <span class="still klein" style="font-weight:400">${esc(f.name)}</span>
+      <span class="marke-chip ${f.bereit ? 'gut' : 'warn'}">${f.bereit ? 'eingabefertig' : `${f.offen} Zeile(n) offen`}</span></h2>
+    <div class="karte eng"><table class="t">
+      <thead><tr><th>Zeile</th><th>Feld</th><th class="z">Eintrag</th><th class="z">in Cent</th></tr></thead>
+      <tbody>${f.felder.map((x, xi) => feld(x, fi, xi)).join('')}</tbody></table></div>`;
+  inhalt.innerHTML = `
+    ${kopf(`ELSTER-Ausfüllhilfe ${d.jahr}`,
+      `Was in Mein ELSTER in welche Zeile gehört. Jeder Betrag wird beim Öffnen aus den Konten
+       gerechnet; eine Zeile mit Konten anklicken zeigt die Buchungen dahinter.
+       ${esc(d.hinweis || '')}`)}
+    <div class="karte"><strong>Zeilennummern:</strong> ${esc(d.zeilen_stand || '')}</div>
+    <h2>Gegenproben</h2>
+    <div class="karte"><ul class="pruef">${d.gegenproben.map((p) => `
+      <li><span class="zeichen ${p.ok ? 'ok' : 'nok'}">${p.ok ? '✓' : '✕'}</span>
+        <span>${esc(p.text)}</span>
+        <span class="detail">${eur(p.ist)}${p.ok ? '' : ` ≠ ${eur(p.soll)}`}</span></li>`).join('')}</ul></div>
+    ${d.formulare.map(formular).join('')}`;
+  if (fokus) {
+    const el = document.getElementById(`formular-${fokus}`);
+    if (el) setTimeout(() => el.scrollIntoView({ block: 'start' }), 0);
+  }
+};
+
+/* ------------------------------------------------------------------ E-Bilanz */
+
+SEITEN.ebilanz = async () => {
+  const d = await holen('/api/ebilanz');
+  if (d.fehler) { inhalt.innerHTML = kopf('E-Bilanz', esc(d.fehler)); return; }
+  const s = d.stammdaten;
+  const zeige = (p) => (p.element.startsWith('bs.eqLiab') || p.seite === 'guv' ? -p.summe : p.summe);
+  const quelleChip = (q) => q === 'neu' ? '<span class="marke-chip warn">ungeprüft</span>'
+    : q === 'auffang' ? '<span class="marke-chip">Auffangposition</span>' : '';
+  const tabelle = (liste, schl) => `<table class="t"><thead><tr><th>Taxonomieposition</th>
+      <th class="z">Betrag</th></tr></thead><tbody>${liste.map((p, i) => {
+        const kn = p.konten.filter((k) => k !== 'GuV');
+        const konten = d.konten.filter((k) => kn.includes(k.nummer));
+        return `<tr><td class="${kn.length ? 'aufklapp' : ''}" ${kn.length ? `data-auf="${schl}${i}"` : ''}>
+          ${kn.length ? '<span class="pfeil">›</span> ' : ''}${esc(p.bezeichnung)}
+          <div class="mono klein still">${esc(p.element)}</div>
+          ${p.ungeprueft ? '<span class="marke-chip warn">Elementname ungeprüft</span>' : ''}
+          ${p.errechnet ? '<span class="marke-chip">aus der GuV errechnet</span>' : ''}</td>
+          <td class="z">${betrag(zeige(p))}</td></tr>
+          ${konten.map((k) => `<tr class="unterzeile" data-unter="${schl}${i}" hidden>
+            <td><a href="#/konto/${k.nummer}" class="mono">${k.nummer}</a> ${esc(k.bezeichnung)}
+              ${quelleChip(k.quelle)}${k.hinweis ? `<div class="klein leise">${esc(k.hinweis)}</div>` : ''}</td>
+            <td class="z">${eur(k.seite === 'guv' || p.element.startsWith('bs.eqLiab') ? -k.saldo : k.saldo)}</td></tr>`).join('')}`;
+      }).join('')}</tbody></table>`;
+  inhalt.innerHTML = `
+    ${kopf(`E-Bilanz ${KONTEXT.jahr}`,
+      `Kontennachweis nach § 5b EStG: jedes Sachkonto mit Saldo und der Taxonomieposition, in die es
+       eingeht — aus der Buchführung gezogen, nicht abgeschrieben. Mein ELSTER hat hierfür kein Formular;
+       übermittelt wird ein XBRL-Datensatz über ERiC oder Drittsoftware.`)}
+    <h2>Prüfungen</h2>
+    <div class="karte"><ul class="pruef">${d.pruefungen.map((p) => `
+      <li><span class="zeichen ${p.ok ? 'ok' : 'nok'}">${p.ok ? '✓' : '✕'}</span>
+        <span>${esc(p.text)}</span><span class="detail">${esc(p.detail)}</span></li>`).join('')}</ul>
+      ${d.ungeprueft.length ? `<p class="klein leise" style="margin:10px 0 0">Ungeprüft:
+        <span class="mono">${d.ungeprueft.map(esc).join(', ')}</span></p>` : ''}</div>
+    <h2>Stammdaten (GCD-Modul)</h2>
+    <div class="karte eng"><table class="t"><tbody>
+      ${[['Name', s.name], ['Rechtsform', s.rechtsform], ['Sitz', s.sitz], ['Register', s.register],
+         ['Steuernummer', s.steuernummer], ['Finanzamt', s.finanzamt],
+         ['Wirtschaftsjahr', s.wirtschaftsjahr], ['Größenklasse', s.groessenklasse],
+         ['Bilanzart', s.bilanzart]]
+        .map(([a, b]) => `<tr><td class="leise" style="width:180px">${esc(a)}</td><td>${esc(b || '')}</td></tr>`).join('')}
+    </tbody></table></div>
+    <h2>Bilanz <span class="still klein" style="font-weight:400">Aktiva ${eur(d.aktiva)} · Passiva ${eur(d.passiva)}</span></h2>
+    <div class="karte eng">${tabelle(d.bilanz, 'b')}</div>
+    <h2>Gewinn- und Verlustrechnung <span class="still klein" style="font-weight:400">Ergebnis ${eur(d.ergebnis)}</span></h2>
+    <div class="karte eng">${tabelle(d.guv, 'g')}</div>
+    ${d.fehlend.length ? `<h2>Ohne Zuordnung</h2><div class="karte eng"><table class="t"><tbody>
+      ${d.fehlend.map((k) => `<tr><td class="mono">${k.nummer}</td><td>${esc(k.bezeichnung)}</td>
+        <td class="z">${eur(k.saldo)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+    <p class="klein still">Zuordnung in <span class="mono">mandanten/${esc(KONTEXT.mandant)}/ebilanz.csv</span>.
+      Positionen aus der DATEV-Übermittlung 2024 hat das Finanzamt bereits angenommen; „ungeprüft“ heißt
+      neu vergeben und vor der Übermittlung gegen die Taxonomie zu halten.</p>`;
+};
 
 /* ---------------------------------------------------------------- Startlauf */
 
@@ -1727,8 +2909,11 @@ async function dokumenteFuellen() {
     const dok = await holen('/api/dokumente');
     ziel.innerHTML = dok.dokumente.map((x) =>
       `<a href="#/dokument/${x.id}" data-seite="dokument">${esc(x.titel)}</a>`).join('');
+    const da = new Set(dok.dokumente.map((x) => x.id));
+    document.querySelectorAll('[data-dok]').forEach((li) => { li.hidden = !da.has(li.dataset.dok); });
   } catch (e) {
     ziel.innerHTML = '';
+    document.querySelectorAll('[data-dok]').forEach((li) => { li.hidden = true; });
   }
   navAktualisieren();
 }
@@ -1744,6 +2929,30 @@ async function offenzahlSetzen() {
   try {
     const d = await holen('/api/offen');
     const n = d.zaehler.offen + d.zaehler.belege_offen;
+    marke.textContent = n;
+    marke.hidden = !n;
+  } catch { marke.hidden = true; }
+}
+
+/** Zahl der Aufgaben neben "Deine Aufgaben" - ueberfaellige faerben die Marke. */
+async function aufgabenzahlSetzen() {
+  const marke = $('#aufgabenzahl');
+  if (!marke) return;
+  try {
+    const d = await holen('/api/aufgaben');
+    marke.textContent = d.zaehler.aufgaben;
+    marke.hidden = !d.zaehler.aufgaben;
+    marke.classList.toggle('dringend', d.zaehler.ueberfaellig > 0);
+  } catch { marke.hidden = true; }
+}
+
+/** Zahl der vorgelegten ELSTER-Übermittlungen neben "Übermittlungen". */
+async function freigabezahlSetzen() {
+  const marke = $('#freigabezahl');
+  if (!marke) return;
+  try {
+    const d = await holen('/api/eric/offen');
+    const n = (d.vorschlaege || []).filter((v) => v.stand === 'offen' || v.stand === 'überholt').length;
     marke.textContent = n;
     marke.hidden = !n;
   } catch { marke.hidden = true; }
@@ -1804,6 +3013,8 @@ function wechsler() {
     return;
   }
   offenzahlSetzen();
+  aufgabenzahlSetzen();
+  freigabezahlSetzen();
 
   if (!location.hash) location.hash = `#/uebersicht?${kontextAbfrage()}`;
   zeichnen();

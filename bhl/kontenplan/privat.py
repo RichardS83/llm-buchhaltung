@@ -170,10 +170,23 @@ KONTEN_BASIS = [
     # nicht feststeht, welche Konten es 2025 tatsaechlich gab.
     ("1200", "Girokonto privat", "A", "VM_BANK", None, None),
     ("1201", "Tagesgeldkonto", "A", "VM_BANK", None, None),
+    ("1202", "Tagesgeldkonto 2", "A", "VM_BANK", None, None),
     ("1210", "Gemeinschaftskonto", "A", "VM_BANK", None, None),
     ("1220", "Mietkonto / Objektkonto", "A", "VM_BANK", None, None),
+    # Treuhandkonten einer Hausverwaltung gehoeren dem Eigentuemer: Mieten
+    # gehen dort ein, Kosten gehen ab, der Ueberschuss wird ausgezahlt. Eine
+    # Verwaltung fuehrt oft mehrere (je Objektgruppe, dazu Kautionen).
+    ("1221", "Treuhandkonto Hausverwaltung (zweites Objektkonto)", "A", "VM_BANK", None, None),
+    ("1222", "Mietkautionskonto (Treuhand)", "A", "VM_BANK", None, None),
     ("1290", "Verrechnungskonto ungeklärt", "A", "VM_BANK", None, None),
     ("1300", "Wertpapierdepot", "A", "VM_DEPOT", None, None),
+    # Physische Edelmetalle sind keine Wertpapiere: ihr Verkauf ist ein
+    # privates Veraeusserungsgeschaeft nach § 23 Abs. 1 Nr. 2 EStG
+    # (steuerfrei nach einem Jahr), nicht Kapitalvermoegen.
+    ("1310", "Edelmetalle (physisch)", "A", "VM_EDELMETALL", None, None),
+    # Anteile an Fonds-KGs und anderen Personengesellschaften, mit dem
+    # eingezahlten Kapital - deren Ergebnis kommt ueber die Feststellung.
+    ("1320", "Beteiligungen an Fonds und Personengesellschaften", "A", "VM_BETEILIGUNG", None, None),
 
     # ------------------------------------------- anrechenbare Steuerabzuege
     # Keine Aufwendungen, sondern Vorauszahlungen auf die eigene Steuerschuld:
@@ -189,6 +202,8 @@ KONTEN_BASIS = [
     ("2000", "Privatvermögen (Saldo)", "P", "VM_EIGEN", None, None),
     ("2100", "Ergebnisvortrag", "P", "VM_EIGEN", None, None),
     ("3090", "Gesellschafterdarlehen – selbstgenutzte Wohnung",
+     "P", "VB_DARLEHEN", None, None),
+    ("3091", "Gesellschafterdarlehen – ohne Objektbezug",
      "P", "VB_DARLEHEN", None, None),
     ("3800", "Erhaltene Mietkautionen", "P", "VB_KAUTION", None, None),
     ("3900", "Sonstige private Verbindlichkeiten", "P", "VB_SONSTIGE", None, None),
@@ -264,6 +279,8 @@ BILANZ_AKTIVA = [
     ("B. Geldvermögen", None),
     ("    1. Bankguthaben", ["VM_BANK"]),
     ("    2. Wertpapiere", ["VM_DEPOT"]),
+    ("    3. Edelmetalle", ["VM_EDELMETALL"]),
+    ("    4. Beteiligungen", ["VM_BETEILIGUNG"]),
     ("C. Anrechenbare Steuerabzüge", ["VM_STEUER"]),
 ]
 
