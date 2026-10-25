@@ -43,6 +43,7 @@ import csv
 import datetime
 import json
 import os
+import re
 
 # Der Vorlauf, ab dem ein Termin als "steht an" gilt. Alles Weitere steht
 # darunter, damit die Liste nicht zur Jahresvorschau wird.
@@ -176,8 +177,35 @@ def ist_gmbh(rechtsform: str | None) -> bool:
     deshalb dasselbe wie fuer jede GmbH.
     """
     r = (rechtsform or "").lower()
+    # Die GmbH & Co. KG (auch UG & Co. KG, GmbH & Co. OHG, GmbH & Co. KGaA) ist
+    # eine Personengesellschaft bzw. KGaA mit einer GmbH als Komplementaerin.
+    # Der Name der Komplementaerin steckt in der Rechtsform, das GmbHG gilt fuer
+    # die Gesellschaft selbst aber nicht - keine Feststellung nach § 42a GmbHG.
+    if re.search(r"&\s*co\b|\bkg\b|\bkgaa\b|\bohg\b|kommanditgesellschaft|offene handelsgesellschaft", r):
+        return False
     return ("gmbh" in r or "beschränkter haftung" in r
             or "unternehmergesellschaft" in r or "haftungsbeschränkt" in r)
+
+
+def gruendungsdatum(stamm: dict) -> datetime.date | None:
+    """Datum des Gesellschaftsvertrags aus der mandant.json (TT.MM.JJJJ)."""
+    try:
+        return datetime.datetime.strptime(
+            stamm.get("gesellschaftsvertrag") or "", "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+
+def eroeffnungsbilanz_im_jahr(stamm: dict, jahr: int) -> bool:
+    """Ist fuer das Geschaeftsjahr `jahr` eine Eroeffnungsbilanz zu uebermitteln?
+
+    § 5b Abs. 1 Satz 4 EStG: im Jahr der Eroeffnung des Betriebs. Massgeblich
+    ist das Jahr des Gesellschaftsvertrags, nicht ob das Geschaeftsjahr genau
+    an diesem Tag beginnt. Eine Regel fuer Fristen, Aufgaben und ELSTER-Seite,
+    damit nicht die eine Seite eine Pflicht zeigt, die die andere nicht anbietet.
+    """
+    gruendung = gruendungsdatum(stamm)
+    return bool(gruendung and gruendung.year == jahr)
 
 
 def jahrespflichten(mandant_dir: str, jahr: int, gj_ende: str, heute: datetime.date,
@@ -260,12 +288,8 @@ def jahrespflichten(mandant_dir: str, jahr: int, gj_ende: str, heute: datetime.d
         # und läuft hier mit deren Termin. Das Gründungsjahr erkennt die Liste
         # am Datum des Gesellschaftsvertrags. Sie wird leicht übersehen, weil sie
         # in keiner Formularliste von Mein ELSTER steht.
-        try:
-            gruendung = datetime.datetime.strptime(
-                stamm.get("gesellschaftsvertrag") or "", "%d.%m.%Y").date()
-        except ValueError:
-            gruendung = None
-        if gruendung and gruendung.year == jahr:
+        if eroeffnungsbilanz_im_jahr(stamm, jahr):
+            gruendung = gruendungsdatum(stamm)
             eintraege.append(_eintrag(
                 "eroeffnungsbilanz",
                 f"Eröffnungsbilanz zum {gruendung:%d.%m.%Y} als E-Bilanz übermitteln",
@@ -347,7 +371,8 @@ def laufend(zeitraeume: list[dict], heute: datetime.date) -> list[dict]:
                 "§ 18 Abs. 1 S. 4 UStG — angemeldet, "
                 + ("wird zur Frist per SEPA-Lastschrift eingezogen" if lastschrift
                    else "noch nicht gezahlt"),
-                heute, betrag_cent=z.get("kz83"), verweis=verweis)
+                heute, betrag_cent=z.get("zahlung_offen_cent", z.get("kz83")),
+                verweis=verweis)
             eintrag["lastschrift"] = lastschrift
             aus.append(eintrag)
         if z.get("zm_summe") and z.get("zm_frist"):

@@ -565,6 +565,91 @@ class Abgabepaket(unittest.TestCase):
         self.assertTrue(fristen.ist_gmbh("Gesellschaft mit beschränkter Haftung"))
         self.assertFalse(fristen.ist_gmbh("Aktiengesellschaft"))
 
+    def test_gmbh_und_co_kg_ist_keine_gmbh(self):
+        """Die GmbH & Co. KG ist eine Personengesellschaft. Dass ihre
+        Komplementaerin im Namen steht, macht sie nicht zur GmbH - sie bekam
+        frueher eine Feststellungsfrist nach § 42a GmbHG, die sie nicht hat."""
+        from bhl import fristen
+        for rf in ("GmbH & Co. KG", "GmbH &Co.KG", "UG (haftungsbeschränkt) & Co. KG",
+                   "GmbH & Co. KGaA", "GmbH & Co. OHG"):
+            self.assertFalse(fristen.ist_gmbh(rf), rf)
+        for rf in ("GmbH", "UG (haftungsbeschränkt)",
+                   "Unternehmergesellschaft (haftungsbeschränkt)"):
+            self.assertTrue(fristen.ist_gmbh(rf), rf)
+        with open(os.path.join(self.mdir, "mandant.json"), "w", encoding="utf-8") as fh:
+            json.dump({"rechtsform": "GmbH & Co. KG"}, fh)
+        arten = [e["art"] for e in fristen.jahrespflichten(self.mdir, 2025, "2025-12-31", self.heute)]
+        self.assertNotIn("feststellung", arten)
+        self.assertIn("jahresabschluss", arten)
+        self.mandant()
+        arten = [e["art"] for e in fristen.jahrespflichten(self.mdir, 2025, "2025-12-31", self.heute)]
+        self.assertIn("feststellung", arten)
+
+    def test_eroeffnungsbilanz_gleiche_regel_in_fristen_und_elster(self):
+        """Fristenliste und ELSTER-Seite entscheiden mit derselben Regel, ob
+        eine Eroeffnungsbilanz faellig ist: das Jahr des Gesellschaftsvertrags
+        (§ 5b Abs. 1 Satz 4 EStG). Frueher verlangte die ELSTER-Seite zusaetzlich,
+        dass das Geschaeftsjahr genau an diesem Tag beginnt - die Frist stand
+        dann in den Aufgaben, die Zeile zum Uebermitteln fehlte."""
+        from bhl import fristen, web
+        self.assertTrue(fristen.eroeffnungsbilanz_im_jahr({"gesellschaftsvertrag": "15.03.2025"}, 2025))
+        self.assertFalse(fristen.eroeffnungsbilanz_im_jahr({"gesellschaftsvertrag": "15.03.2025"}, 2026))
+        self.assertFalse(fristen.eroeffnungsbilanz_im_jahr({}, 2025))
+        self.assertFalse(fristen.eroeffnungsbilanz_im_jahr({"gesellschaftsvertrag": "2025"}, 2025))
+
+        # Geschaeftsjahr 01.01.-31.12.2025, Gesellschaftsvertrag erst im Maerz
+        mdir = os.path.join(self.tmp, "mandanten", "beispiel")
+        os.makedirs(mdir)
+        with open(os.path.join(WURZEL, "mandanten", "beispiel", "mandant.json"), encoding="utf-8") as fh:
+            stamm = json.load(fh)
+        stamm["gesellschaftsvertrag"] = "15.03.2025"
+        with open(os.path.join(mdir, "mandant.json"), "w", encoding="utf-8") as fh:
+            json.dump(stamm, fh)
+        self.assertEqual(self.gj["beginn"], "2025-01-01")
+        termine = {e["art"]: e for e in fristen.jahrespflichten(mdir, 2025, "2025-12-31", self.heute)}
+        self.assertIn("eroeffnungsbilanz", termine)
+        k = web.Kontext(self.dbp, self.tmp, "beispiel", 2025)
+        zeilen = [z for z in web.eric_offen(k)["zeilen"] if z["art"] == "eroeffnung"]
+        self.assertEqual([z["jahr"] for z in zeilen], [2025])
+        self.assertEqual(zeilen[0]["frist"], termine["eroeffnungsbilanz"]["faellig"])
+
+        # Ein anderes Gruendungsjahr: weder Frist noch Zeile
+        stamm["gesellschaftsvertrag"] = "15.03.2024"
+        with open(os.path.join(mdir, "mandant.json"), "w", encoding="utf-8") as fh:
+            json.dump(stamm, fh)
+        termine = {e["art"] for e in fristen.jahrespflichten(mdir, 2025, "2025-12-31", self.heute)}
+        self.assertNotIn("eroeffnungsbilanz", termine)
+        self.assertNotIn("eroeffnung", [z["art"] for z in web.eric_offen(k)["zeilen"]])
+
+    def test_zm_findet_uebermittelten_wert_trotz_leerzeichen(self):
+        """Steht die USt-IdNr. im Buchungstext mit Leerzeichen oder klein
+        geschrieben, muss die ZM-Uebersicht den uebermittelten Wert trotzdem
+        finden - frueher wurde mit der ungeglaetteten Kennung nachgeschlagen."""
+        import types
+        from unittest import mock
+        from bhl import umsatzsteuer, web
+        z = umsatzsteuer.zeitraum_aus_code(2025, "43")
+        meldung = {"summe": 120000, "frist": "2025-10-27",
+                   "kunden": [{"ust_idnr": "AT U 1234 5678", "betrag": 120000, "zeilen": []}]}
+        stand = {"status": "abgegeben", "kennzahlen": {"ATU12345678": 1200},
+                 "transferticket": "tt", "abgegeben_am": "2025-10-20", "notiz": None}
+        con = types.SimpleNamespace(execute=lambda *a: [])
+        k = types.SimpleNamespace(con=lambda: con, mandant_dir=self.mdir, mandant_id=1,
+                                  mandant={"kuerzel": "beispiel"})
+        with mock.patch.object(umsatzsteuer, "einstellungen", return_value={
+                "satz": 19, "ermaessigt": 7, "reverse_charge_abziehbar": True}), \
+             mock.patch.object(umsatzsteuer, "quartale", return_value=[z]), \
+             mock.patch.object(umsatzsteuer, "zusammenfassende_meldung", return_value=meldung), \
+             mock.patch.object(umsatzsteuer, "stand", return_value=stand), \
+             mock.patch.object(umsatzsteuer, "kennzahlen", return_value={"basen": {"21": 120000}}), \
+             mock.patch.object(web.eric_ansicht, "laeufe", return_value=[]):
+            zeile = web.zm_uebersicht(k)["zeitraeume"][0]
+        kunde = zeile["kunden"][0]
+        self.assertEqual(kunde["euro"], 1200)
+        self.assertEqual(kunde["uebermittelt"], 1200)
+        self.assertEqual(zeile["abweichend"], 0)
+        self.assertEqual(web._idnr(" at u1234 5678 "), "ATU12345678")
+
     def test_lohnsteuerbescheinigung_nur_bei_lohnzahlung(self):
         from bhl import fristen
         self.mandant()
@@ -827,3 +912,65 @@ class Oberflaeche(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("belegt", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
+
+    def _starten(self):
+        erst = self.ensure()
+        self.assertEqual(erst.returncode, 0, erst.stderr)
+        self.kinder = self._pids()
+
+    def _anfrage(self, roh: bytes) -> tuple[int, bytes]:
+        """Eine rohe HTTP-Anfrage - nur so lassen sich Host und Content-Length
+        frei setzen. Die Zeitgrenze laesst den Test scheitern statt haengen."""
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as s:
+            s.sendall(roh)
+            antwort = b""
+            while True:
+                stueck = s.recv(65536)
+                if not stueck:
+                    break
+                antwort += stueck
+        kopf, _, koerper = antwort.partition(b"\r\n\r\n")
+        return int(kopf.split()[1]), koerper
+
+    def test_fremder_host_liest_nichts(self):
+        """DNS-Rebinding: eine fremde Seite, deren Name auf 127.0.0.1 zeigt,
+        darf keine einzige GET-Antwort lesen - nicht die Seite, nicht die
+        Steuerdaten, nicht das Postfach. Der eigene Host bleibt erreichbar,
+        unter 127.0.0.1 wie unter localhost."""
+        self._starten()
+        for pfad in ("/", "/api/mandanten", "/api/elster", "/api/ebilanz",
+                     "/api/eric/offen", "/api/postfach", "/eric/datei?lauf=x&datei=y",
+                     "/postfach/datei?id=x"):
+            for host in (f"boese.example:{self.port}", "boese.example",
+                         f"127.0.0.1:{self.port + 1}", ""):
+                status, koerper = self._anfrage(
+                    f"GET {pfad} HTTP/1.0\r\nHost: {host}\r\n\r\n".encode())
+                self.assertEqual(status, 403, f"{pfad} mit Host {host!r}")
+                self.assertNotIn(b"bh-token", koerper)
+        for host in (f"127.0.0.1:{self.port}", f"localhost:{self.port}"):
+            status, koerper = self._anfrage(
+                f"GET / HTTP/1.0\r\nHost: {host}\r\n\r\n".encode())
+            self.assertEqual(status, 200, host)
+            self.assertIn(b"bh-token", koerper)
+            status, _ = self._anfrage(
+                f"GET /api/mandanten HTTP/1.0\r\nHost: {host}\r\n\r\n".encode())
+            self.assertEqual(status, 200, host)
+
+    def test_ungueltige_content_length_wird_abgewiesen(self):
+        """Eine negative Laenge liess rfile.read(-1) bis zum Verbindungsende
+        lesen - die Anfrage hing. Fehlend, negativ oder keine Zahl: 400."""
+        import re
+        self._starten()
+        host = f"127.0.0.1:{self.port}"
+        _, seite = self._anfrage(f"GET / HTTP/1.0\r\nHost: {host}\r\n\r\n".encode())
+        token = re.search(rb'name="bh-token" content="([^"]+)"', seite).group(1).decode()
+        # "\xb2" (hochgestellte 2) gilt str.isdigit() als Ziffer, int() nicht
+        for laenge in ("Content-Length: -1\r\n", "Content-Length: abc\r\n",
+                       "Content-Length: \xb2\r\n", "Content-Length: 10001\r\n", ""):
+            # Verbindung bleibt offen (kein EOF): bei einem Haenger greift die Zeitgrenze
+            with socket.create_connection(("127.0.0.1", self.port), timeout=5) as s:
+                s.sendall((f"POST /api/eric/verwerfen HTTP/1.1\r\nHost: {host}\r\n"
+                           f"Content-Type: application/json\r\nX-BH-Token: {token}\r\n"
+                           f"{laenge}\r\n").encode("latin-1"))
+                antwort = s.recv(65536)
+            self.assertEqual(antwort.split()[1:2], [b"400"], f"{laenge!r}: {antwort[:80]!r}")

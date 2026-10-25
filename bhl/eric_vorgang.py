@@ -56,6 +56,13 @@ class VorgangFehler(Exception):
     pass
 
 
+class NichtFestgehalten(VorgangFehler):
+    """Gesendet und angenommen, aber nicht festgehalten: die Abgabe liegt beim
+    Finanzamt, voranmeldungen.csv, fristen.csv oder die Datenbank wissen es
+    nicht. Trägt den Vorgang (`vorgang`, `lauf`) mit Transferticket — wer das
+    abfängt, darf nicht melden, es sei nichts gesendet."""
+
+
 @dataclass
 class Datensatz:
     art: str
@@ -221,10 +228,7 @@ def datensatz(con: sqlite3.Connection, mandant_id: int, mandant_dir: str,
             stnr = eric.steuernummer(stamm.get("steuernummer") or "", bufa)
             tax = ebilanz_xbrl.taxonomie()
             a = ebilanz_xbrl.abschluss(con, z.gj_id, mandant_dir, tax)
-            vorjahr = con.execute("SELECT id FROM geschaeftsjahr WHERE mandant_id=? AND jahr=?",
-                                  (mandant_id, z.jahr - 1)).fetchone()
-            ek_vorjahr = (ebilanz_xbrl.abschluss(con, vorjahr["id"], mandant_dir, tax).eigenkapital
-                          if vorjahr else 0)
+            ek_vorjahr = ebilanz_xbrl.eigenkapital_vorjahr(con, z.gj_id, mandant_dir, stamm, tax)
             gj = {"beginn": z.von.isoformat(), "ende": z.bis.isoformat()}
             xml = ebilanz_xbrl.datensatz(
                 a, stamm=stamm, gj=gj, steuernummer=stnr, bufa=bufa,
@@ -320,14 +324,18 @@ def stand(mandant_dir: str, jahr: int, code: str, art: str) -> dict | None:
     return None
 
 
+def _zeile(jahr: int, code: str, art: str, ticket: str, datum: str, notiz: str) -> str:
+    return ";".join([str(jahr), code, art, "abgegeben", ticket, datum, "",
+                     notiz.replace(";", ",").replace("\n", " ")])
+
+
 def eintragen(mandant_dir: str, jahr: int, code: str, art: str, ticket: str,
               datum: str, notiz: str) -> None:
     """Abgabe in voranmeldungen.csv festhalten — eine vorhandene Zeile des
     Zeitraums wird ersetzt (berichtigte Anmeldung), sonst angehängt.
     Kommentare und Reihenfolge der übrigen Zeilen bleiben, wie sie sind."""
     pfad = _csv_pfad(mandant_dir)
-    neu = ";".join([str(jahr), code, art, "abgegeben", ticket, datum, "",
-                    notiz.replace(";", ",").replace("\n", " ")])
+    neu = _zeile(jahr, code, art, ticket, datum, notiz)
     zeilen = []
     if os.path.exists(pfad):
         with open(pfad, encoding="utf-8") as fh:
@@ -479,6 +487,8 @@ class Vorgang:
     vorpruefung: eric_mod.Ergebnis | None
     lauf: Lauf
     festgehalten: bool = False
+    # Gesendet, aber das Festhalten scheiterte: was von Hand nachzutragen ist
+    festhalten_fehler: str | None = None
 
 
 def betrag_text(cent: int) -> str:
@@ -492,6 +502,38 @@ def letzte_pruefung(mandant_dir: str, z: ust.Zeitraum, art: str) -> dict | None:
                  and (l["jahr"], l["zeitraum"], l["art"]) == (z.jahr, z.code, art)), None)
 
 
+def fruehere_abgabe(mandant_dir: str, z: ust.Zeitraum, art: str) -> dict | None:
+    """Der neueste angenommene Versand desselben Zeitraums und derselben Art,
+    gelesen aus der Ablage der Läufe. Er zählt auch dann, wenn ihn
+    voranmeldungen.csv oder fristen.csv nicht kennen — etwa weil das
+    Festhalten danach gescheitert ist."""
+    from . import eric_ansicht
+    return next((l for l in eric_ansicht.laeufe(mandant_dir) if l["modus"] == "senden"
+                 and not l.get("abgebrochen") and (l.get("ergebnis") or {}).get("gesendet")
+                 and (l["jahr"], l["zeitraum"], l["art"]) == (z.jahr, z.code, art)), None)
+
+
+def _nachtragen(mandant_dir: str, kuerzel: str, z: ust.Zeitraum, art: str, lauf: Lauf,
+                ticket: str, heute: str, notiz: str, erledigt: list[str],
+                fehler: Exception) -> str:
+    """Was zu sagen ist, wenn gesendet, aber nicht festgehalten wurde."""
+    if art in JAHRESARTEN:
+        datei = os.path.join(mandant_dir, "fristen.csv")
+        zeile = ";".join([str(z.jahr), JAHRESARTEN[art], "erledigt", heute, ticket,
+                          notiz.replace(";", ",").replace("\n", " "), ""])
+        danach = ""
+    else:
+        datei = _csv_pfad(mandant_dir)
+        zeile = _zeile(z.jahr, z.code, art, ticket, heute, notiz)
+        danach = f"\ndanach `bh ustva {kuerzel} {z.jahr}` — das übernimmt sie in die Datenbank."
+    schon = (f"\nSchon festgehalten: {', '.join(erledigt)}." if erledigt else "")
+    return (f"{TITEL[art]} {z.bezeichnung} ist ÜBERMITTELT und angenommen — "
+            f"{'Transferticket ' + ticket if ticket else 'ohne Transferticket in der Antwort'}"
+            f" (Lauf in {lauf.ordner}). Nicht erneut senden.\n"
+            f"Festhalten ist gescheitert: {type(fehler).__name__}: {fehler}.{schon}\n"
+            f"Von Hand nachtragen: in {datei} die Zeile\n    {zeile}{danach}")
+
+
 def durchfuehren(con: sqlite3.Connection, mandant_id: int, kuerzel: str, mandant_dir: str,
                  z: ust.Zeitraum, art: str, modus: str, einstellung: Einstellung, *,
                  berichtigt: bool = False, testzertifikat: bool = False,
@@ -503,6 +545,12 @@ def durchfuehren(con: sqlite3.Connection, mandant_id: int, kuerzel: str, mandant
     Pflicht; sie wirft VorgangFehler, wenn nicht freigegeben ist. Ohne sie wird
     nicht gesendet. Wirft VorgangFehler, wenn etwas fehlt oder die Vorprüfung
     Fehler findet; der abgebrochene Lauf liegt dann trotzdem in der Ablage.
+
+    Scheitert nach einer angenommenen Abgabe das Festhalten (voranmeldungen.csv,
+    fristen.csv, Datenbank — etwa „database is locked“ durch ein zweites `bh`),
+    geht die Abgabe nicht verloren: NichtFestgehalten trägt Vorgang, Lauf und
+    Transferticket und sagt, was von Hand nachzutragen ist. Ein zweiter Versand
+    desselben Zeitraums scheitert dann an `fruehere_abgabe`.
     """
     if modus not in MODI or art not in ARTEN:
         raise VorgangFehler(f"Unbekannt: {modus} {art}")
@@ -517,6 +565,17 @@ def durchfuehren(con: sqlite3.Connection, mandant_id: int, kuerzel: str, mandant
             raise VorgangFehler(f"{TITEL[art]} {z.bezeichnung} ist schon abgegeben (Ticket "
                                 f"{vorher['transferticket']}). Eine Berichtigung nur als "
                                 f"berichtigte Anmeldung.")
+        # Der festgehaltene Stand allein genügt nicht: ist das Festhalten nach
+        # einer Abgabe gescheitert, steht sie nur in der Ablage der Läufe.
+        frueher = None if berichtigt else fruehere_abgabe(mandant_dir, z, art)
+        if frueher:
+            ticket = (frueher.get("ergebnis") or {}).get("transferticket") or "ohne Ticket"
+            raise VorgangFehler(
+                f"{TITEL[art]} {z.bezeichnung} ist schon übermittelt: Lauf {frueher['id']} vom "
+                f"{(frueher.get('zeit') or '')[:16].replace('T', ' ')}, Transferticket {ticket} "
+                f"— aber nicht festgehalten. Erst nachtragen (voranmeldungen.csv bzw. "
+                f"fristen.csv), nicht erneut senden. Eine Berichtigung nur als berichtigte "
+                f"Anmeldung.")
     zert = pin = None
     if modus != "pruefen":
         if testzertifikat and modus == "test":
@@ -554,21 +613,36 @@ def durchfuehren(con: sqlite3.Connection, mandant_id: int, kuerzel: str, mandant
     if modus == "senden" and r and r.gesendet:
         from . import eric_ansicht
         heute = datetime.date.today().isoformat()
+        ticket = r.transferticket or ""
         notiz = (f"Per ERiC übermittelt ({TITEL[art]}, "
                  f"{FREIGABE.get(art, 'Betrag')} {betrag_text(ds.betrag_cent)} EUR)"
                  + (", berichtigte Anmeldung" if berichtigt and art not in JAHRESARTEN
                     else ", ersetzt die frühere Übermittlung" if berichtigt else "") + ".")
-        if art in JAHRESARTEN:
-            fristen.festhalten(mandant_dir, z.jahr, JAHRESARTEN[art], "erledigt", heute,
-                               r.transferticket or "", notiz)
-        else:
-            eintragen(mandant_dir, z.jahr, z.code, art, r.transferticket or "", heute, notiz)
-            werte = eric_ansicht.werte_aus_xml(ds.xml, art)
-            if art == "zm":
-                werte = {idnr: b for idnr, b, _ in werte}
-            ust.festhalten(con, mandant_id, z, "abgegeben", transferticket=r.transferticket,
-                           abgegeben_am=heute, kennzahlen_werte=werte, notiz=notiz, art=art)
-            con.commit()
+        erledigt = []
+        try:
+            if art in JAHRESARTEN:
+                fristen.festhalten(mandant_dir, z.jahr, JAHRESARTEN[art], "erledigt", heute,
+                                   ticket, notiz)
+                erledigt.append("fristen.csv")
+            else:
+                eintragen(mandant_dir, z.jahr, z.code, art, ticket, heute, notiz)
+                erledigt.append("voranmeldungen.csv")
+                werte = eric_ansicht.werte_aus_xml(ds.xml, art)
+                if art == "zm":
+                    werte = {idnr: b for idnr, b, _ in werte}
+                ust.festhalten(con, mandant_id, z, "abgegeben", transferticket=r.transferticket,
+                               abgegeben_am=heute, kennzahlen_werte=werte, notiz=notiz, art=art)
+                con.commit()
+        except Exception as f:   # alles: eine Abgabe darf hinter keinem Fehler verschwinden
+            try:
+                con.rollback()   # keine halbe Eintragung, die ein späteres commit mitnimmt
+            except sqlite3.Error:
+                pass
+            v.festhalten_fehler = _nachtragen(mandant_dir, kuerzel, z, art, lauf, ticket, heute,
+                                              notiz, erledigt, f)
+            fehler = NichtFestgehalten(v.festhalten_fehler)
+            fehler.lauf, fehler.vorgang = lauf, v
+            raise fehler from f
         v.festgehalten = True
     return v
 

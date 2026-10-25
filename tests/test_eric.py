@@ -747,6 +747,150 @@ class Festhalten(unittest.TestCase):
             self.assertIsNone(eric_vorgang.stand(d, 2026, "43", "ustva"))
 
 
+class AbgabeFesthalten(unittest.TestCase):
+    """Eine angenommene Abgabe geht nicht verloren, wenn das Festhalten danach
+    scheitert — und wird kein zweites Mal gesendet. ERiC ist die Attrappe, der
+    Datensatz fest: geprüft wird nur der Weg nach dem Senden."""
+
+    def setUp(self):
+        from bhl import db
+        self.tmp = tempfile.TemporaryDirectory()
+        self.con = db.connect(os.path.join(self.tmp.name, "probe.sqlite"))
+        self.mid = self.con.execute("INSERT INTO mandant (kuerzel, name) VALUES "
+                                    "('probe', 'Probe GmbH')").lastrowid
+        self.con.commit()
+        self.mdir = os.path.join(self.tmp.name, "m")
+        os.makedirs(self.mdir)
+        with open(os.path.join(self.mdir, "mandant.json"), "w", encoding="utf-8") as fh:
+            json.dump({"elster": {"bufa": "9198", "zertifikat": "/z.pfx"}}, fh)
+        bibliothek = os.path.join(self.tmp.name, "sdk", "lib")
+        eric.hinweise_bestaetigen(bibliothek)
+        self.einstellung = eric_vorgang.Einstellung(bibliothek, HID)
+        self.libs = []
+        self.alt = (eric_vorgang.datensatz, eric_vorgang.eintragen,
+                    eric_vorgang.ust.festhalten, eric_vorgang.fristen.festhalten,
+                    os.environ.get("ERIC_PIN_PROBE"))
+        os.environ["ERIC_PIN_PROBE"] = "0000"          # erfunden, für die Attrappe
+        eric_vorgang.datensatz = lambda con, mid, md, z, art, e, er, **kw: \
+            eric_vorgang.Datensatz(art, z, ustva_xml() if art == "ustva" else "<ebilanz/>",
+                                   "UStVA_2026" if art == "ustva" else "Bilanz_6.9", 13100,
+                                   [("Kz 83", "131,00")])
+
+    def tearDown(self):
+        (eric_vorgang.datensatz, eric_vorgang.eintragen, eric_vorgang.ust.festhalten,
+         eric_vorgang.fristen.festhalten, pin) = self.alt
+        if pin is None:
+            os.environ.pop("ERIC_PIN_PROBE", None)
+        else:
+            os.environ["ERIC_PIN_PROBE"] = pin
+        self.con.close()
+        self.tmp.cleanup()
+
+    def eric_klasse(self, bibliothek, protokoll):
+        lib = Attrappe(server=SERVER)
+        self.libs.append(lib)
+        return eric.Eric(bibliothek, protokoll, lib=lib)
+
+    def senden(self, z, art="ustva", **kw):
+        return eric_vorgang.durchfuehren(self.con, self.mid, "probe", self.mdir, z, art,
+                                         "senden", self.einstellung,
+                                         freigabe=lambda ds, vp, pruefung: None,
+                                         eric_klasse=self.eric_klasse, **kw)
+
+    def gesendet(self) -> int:
+        return sum(1 for lib in self.libs for a in lib.aufrufe
+                   if a[0] == "vorgang" and a[4] is not None)
+
+    @staticmethod
+    def gesperrt(*a, **kw):
+        import sqlite3
+        raise sqlite3.OperationalError("database is locked")
+
+    def test_gesperrte_datenbank_verliert_die_abgabe_nicht(self):
+        z = eric_vorgang.ust.Zeitraum(2026, quartal=3)
+        eric_vorgang.ust.festhalten = self.gesperrt
+        with self.assertRaises(eric_vorgang.NichtFestgehalten) as f:
+            self.senden(z)
+        fehler = f.exception
+        self.assertIsInstance(fehler, eric_vorgang.VorgangFehler, "CLI und Web fangen es ab")
+        text = str(fehler)
+        self.assertIn("ÜBERMITTELT", text)
+        self.assertIn("Transferticket et0000000000", text)
+        self.assertIn("Nicht erneut senden", text)
+        self.assertIn("database is locked", text)
+        self.assertIn("Schon festgehalten: voranmeldungen.csv", text)
+        self.assertIn("bh ustva probe 2026", text)
+        self.assertTrue(fehler.lauf.ergebnis.gesendet)
+        self.assertEqual(fehler.lauf.ergebnis.transferticket, "et0000000000")
+        self.assertFalse(fehler.vorgang.festgehalten)
+        self.assertEqual(fehler.vorgang.festhalten_fehler, text)
+        self.assertIs(fehler.vorgang.lauf, fehler.lauf)
+        self.assertFalse(self.con.in_transaction, "nichts Halbes für ein späteres commit")
+        self.assertEqual(self.gesendet(), 1)
+
+    def test_nur_in_der_ablage_abgegeben_sperrt_den_zweiten_versand(self):
+        z = eric_vorgang.ust.Zeitraum(2026, quartal=3)
+        eric_vorgang.eintragen = lambda *a, **kw: (_ for _ in ()).throw(
+            PermissionError("voranmeldungen.csv schreibgeschützt"))
+        with self.assertRaises(eric_vorgang.NichtFestgehalten) as f:
+            self.senden(z)
+        text = str(f.exception)
+        self.assertNotIn("Schon festgehalten", text)
+        self.assertIn("2026;43;ustva;abgegeben;et0000000000;", text, "die Zeile zum Nachtragen")
+        self.assertIsNone(eric_vorgang.stand(self.mdir, 2026, z.code, "ustva"),
+                          "voranmeldungen.csv weiß nichts davon")
+        with self.assertRaises(eric_vorgang.VorgangFehler) as zweiter:
+            self.senden(z)
+        self.assertNotIsInstance(zweiter.exception, eric_vorgang.NichtFestgehalten)
+        self.assertIn("schon übermittelt", str(zweiter.exception))
+        self.assertIn("et0000000000", str(zweiter.exception))
+        self.assertEqual(self.gesendet(), 1, "kein zweiter Versand")
+        # Die Berichtigung bleibt der gewollte Weg
+        eric_vorgang.eintragen = self.alt[1]
+        v = self.senden(z, berichtigt=True)
+        self.assertTrue(v.festgehalten)
+        self.assertIsNone(v.festhalten_fehler)
+        self.assertEqual(self.gesendet(), 2)
+        self.assertIn("berichtigte Anmeldung",
+                      eric_vorgang.stand(self.mdir, 2026, z.code, "ustva")["notiz"])
+
+    def test_jahreserklaerung_nennt_die_zeile_fuer_fristen_csv(self):
+        z = eric_vorgang.Geschaeftsjahr(2025, "2025-01-01", "2025-12-31")
+        eric_vorgang.fristen.festhalten = lambda *a, **kw: (_ for _ in ()).throw(
+            OSError("Datenträger voll"))
+        with self.assertRaises(eric_vorgang.NichtFestgehalten) as f:
+            self.senden(z, art="ebilanz")
+        self.assertIn("fristen.csv die Zeile\n    2025;ebilanz;erledigt;", str(f.exception))
+        self.assertIn(";et0000000000;", str(f.exception))
+        eric_vorgang.fristen.festhalten = self.alt[3]
+        with self.assertRaises(eric_vorgang.VorgangFehler) as zweiter:
+            self.senden(z, art="ebilanz")
+        self.assertIn("schon übermittelt", str(zweiter.exception))
+        self.assertEqual(self.gesendet(), 1)
+
+    def test_ohne_fehler_wie_bisher(self):
+        z = eric_vorgang.ust.Zeitraum(2026, quartal=3)
+        v = self.senden(z)
+        self.assertTrue(v.festgehalten)
+        self.assertEqual(eric_vorgang.stand(self.mdir, 2026, z.code, "ustva")["transferticket"],
+                         "et0000000000")
+        self.assertEqual(eric_vorgang.ust.stand(self.con, self.mid, z)["status"], "abgegeben")
+        with self.assertRaises(eric_vorgang.VorgangFehler) as zweiter:
+            self.senden(z)
+        self.assertIn("schon abgegeben", str(zweiter.exception))
+
+    def test_test_und_pruefen_sperren_nicht(self):
+        """Nur eine angenommene Abgabe zählt, nicht ein Test mit Testmerker."""
+        z = eric_vorgang.ust.Zeitraum(2026, quartal=3)
+        eric_vorgang.durchfuehren(self.con, self.mid, "probe", self.mdir, z, "ustva", "test",
+                                  self.einstellung, eric_klasse=self.eric_klasse)
+        self.assertIsNone(eric_vorgang.fruehere_abgabe(self.mdir, z, "ustva"))
+        self.assertTrue(self.senden(z).festgehalten)
+        self.assertIsNotNone(eric_vorgang.fruehere_abgabe(self.mdir, z, "ustva"))
+        self.assertIsNone(eric_vorgang.fruehere_abgabe(
+            self.mdir, eric_vorgang.ust.Zeitraum(2026, quartal=2), "ustva"))
+
+
 def deutsche_idnr(acht: str) -> str:
     """Erfundene, aber prüfziffergültige USt-IdNr. (ISO 7064, MOD 11,10) — ERiC
     rechnet die Prüfziffer nach. Zur Laufzeit gebildet, damit im Quelltext
@@ -833,6 +977,24 @@ class Weboberflaeche(unittest.TestCase):
         antwort, status = self.senden()
         self.assertEqual(self.gesendet, ["senden"])
         self.assertEqual(antwort["fehler"], "bis hierher")
+
+    def test_nicht_festgehalten_zeigt_ticket_und_lauf(self):
+        """Gesendet, aber das Festhalten scheiterte: der Browser bekommt das
+        Ticket und den Lauf, nicht nur einen Fehler."""
+        lauf = eric_vorgang.Lauf(self.ds, None, "/tmp/2026/elster/2026-Q3-zm/x-senden", {})
+
+        def durchfuehren(*a, **kw):
+            f = eric_vorgang.NichtFestgehalten("ÜBERMITTELT — Transferticket et0000000000")
+            f.lauf = lauf
+            raise f
+
+        self.web.eric_vorgang.durchfuehren = durchfuehren
+        antwort, status = self.senden()
+        self.assertEqual(status, 409)
+        self.assertIn("et0000000000", antwort["fehler"])
+        self.assertEqual(antwort["lauf"], "2026/elster/2026-Q3-zm/x-senden")
+        self.assertTrue(antwort["gesendet"], "nie als \"nichts gesendet\" melden")
+        self.assertFalse(antwort["festgehalten"])
 
     def test_ohne_freigabe_wird_nicht_gesendet(self):
         for falsch in ({"betrag": "1500"}, {"gelesen": False}, {"pruefung": "andere"}):
@@ -1072,6 +1234,126 @@ class EBilanz(unittest.TestCase):
                 testmerker=eric_xml.TESTMERKER, heute=datetime.date(2026, 10, 22))
             r = er.bearbeite(xml, ebilanz_xbrl.taxonomie()["datenart_version"])
         self.assertTrue(r.ok, (r.text, r.fehler[:5]))
+
+    def test_gruendungsjahr_beginnt_bei_null(self):
+        """Die Eröffnungsbuchung ist die Gründung selbst: kein Vorjahr, das
+        eingezahlte Kapital ist Einlage — mit und ohne Gesellschaftsvertrag in
+        mandant.json, weil die ausstehenden Einlagen das Kapital ausgleichen."""
+        from bhl import ebilanz_xbrl
+        for stamm in ({"gesellschaftsvertrag": "07.10.2025"}, {}):
+            self.assertEqual(ebilanz_xbrl.eigenkapital_vorjahr(self.con, self.gj, self.mdir,
+                                                               stamm), 0, stamm)
+
+
+EBILANZ_VORJAHR_CSV = """konto;element;bezeichnung;seite;quelle;hinweis
+1800;bs.ass.currAss.cashEquiv.bank;Guthaben bei Kreditinstituten;bilanz;plugin-6.9;
+2900;bs.eqLiab.equity.subscribed.corp;gezeichnetes Kapital;bilanz;plugin-6.9;
+2970;bs.eqLiab.equity.retainedEarnings.finalPrev;Gewinnvortrag;bilanz;plugin-6.9;
+3300;bs.eqLiab.liab.trade;Verbindlichkeiten aus Lieferungen und Leistungen;bilanz;plugin-6.9;
+6855;is.netIncome.regular.operatingTC.otherCost.otherOrdinary;andere sonstige Aufwendungen;guv;plugin-6.9;
+"""
+
+
+class EBilanzOhneVorjahr(unittest.TestCase):
+    """Eine GmbH, die 2019 gegründet ist und erst 2026 in `bh` gebucht wird:
+    kein Vorjahr in der Datenbank, das Eigenkapital steht in den
+    Eröffnungsbuchungen gegen 9000 - erfundene Beträge."""
+
+    def setUp(self):
+        from bhl import db, ledger
+        self.tmp = tempfile.TemporaryDirectory()
+        self.con = db.connect(os.path.join(self.tmp.name, "probe.sqlite"))
+        self.m = self.con.execute("INSERT INTO mandant (kuerzel, name) VALUES "
+                                  "('probe', 'Probe GmbH')").lastrowid
+        self.gj = self.con.execute("INSERT INTO geschaeftsjahr (mandant_id, jahr, beginn, ende)"
+                                   " VALUES (?, 2026, '2026-01-01', '2026-12-31')",
+                                   (self.m,)).lastrowid
+        for nr, bez, typ in (("1800", "Bank", "A"), ("2900", "Gezeichnetes Kapital", "P"),
+                             ("2970", "Gewinnvortrag", "P"), ("3300", "Verbindlichkeiten", "P"),
+                             ("6855", "Bankgebühren", "X"), ("9000", "Saldenvorträge", "P")):
+            self.con.execute("INSERT INTO konto (mandant_id, nummer, bezeichnung, typ)"
+                             " VALUES (?,?,?,?)", (self.m, nr, bez, typ))
+        b = lambda t, z, art="lfd", d="2026-01-01": ledger.buchen(  # noqa: E731
+            self.con, self.gj, self.m, d, t, z, art=art)
+        b("EB Bank", [("1800", 3100000, 0), ("9000", 0, 3100000)], "eb")
+        b("EB Kapital", [("9000", 2500000, 0), ("2900", 0, 2500000)], "eb")
+        b("EB Gewinnvortrag", [("9000", 500000, 0), ("2970", 0, 500000)], "eb")
+        b("EB Verbindlichkeit", [("9000", 100000, 0), ("3300", 0, 100000)], "eb")
+        b("Zahlung", [("3300", 100000, 0), ("1800", 0, 100000)], d="2026-02-10")
+        b("Gebühren", [("6855", 4500, 0), ("1800", 0, 4500)], d="2026-12-31")
+        self.mdir = os.path.join(self.tmp.name, "m")
+        os.makedirs(self.mdir)
+        self.csv(EBILANZ_VORJAHR_CSV)
+        self.stamm = {**STAMM, "rechtsform": "GmbH", "gesellschaftsvertrag": "01.03.2019",
+                      "elster": {"bufa": "9198"}}
+
+    def tearDown(self):
+        self.con.close()
+        self.tmp.cleanup()
+
+    def csv(self, inhalt):
+        with open(os.path.join(self.mdir, "ebilanz.csv"), "w", encoding="utf-8") as fh:
+            fh.write(inhalt)
+
+    def bvv(self, stamm) -> dict:
+        from bhl import ebilanz_xbrl
+        xml = ebilanz_xbrl.datensatz(
+            ebilanz_xbrl.abschluss(self.con, self.gj, self.mdir), stamm=stamm,
+            gj={"beginn": "2026-01-01", "ende": "2026-12-31"}, steuernummer="9198011310231",
+            bufa="9198", hersteller_id=HID, produkt="p", produktversion="1",
+            eigenkapital_vorjahr=ebilanz_xbrl.eigenkapital_vorjahr(self.con, self.gj,
+                                                                   self.mdir, stamm),
+            heute=datetime.date(2026, 10, 25))
+        return self.fakten(xml)
+
+    @staticmethod
+    def fakten(xml) -> dict:
+        wurzel = ET.fromstring(xml.encode())
+        nil = "{http://www.w3.org/2001/XMLSchema-instance}nil"
+        return {e.tag.rsplit("}", 1)[-1]: (None if e.get(nil) == "true" else e.text)
+                for e in wurzel.iter() if e.tag.rsplit("}", 1)[-1].startswith("BVV.")}
+
+    def test_eigenkapital_aus_den_eroeffnungsbuchungen(self):
+        f = self.bvv(self.stamm)
+        self.assertEqual(f["BVV.profitLoss"], "-45.00")
+        self.assertEqual(f["BVV.profitLoss.assetsPreviousYear"], "30000.00",
+                         "Kapital und Gewinnvortrag der Eröffnung, nicht die Verbindlichkeit")
+        self.assertEqual(f["BVV.profitLoss.assetsPreviousYear.assets"], "30000.00")
+        self.assertEqual(f["BVV.profitLoss.assetsCurrentYear"], "29955.00")
+        self.assertIsNone(f["BVV.profitLoss.contribution"], "das Anfangskapital ist keine Einlage")
+        self.assertIsNone(f["BVV.profitLoss.withdrawalDistrib"])
+
+    def test_im_gruendungsjahr_bleibt_es_einlage(self):
+        f = self.bvv({**self.stamm, "gesellschaftsvertrag": "05.01.2026"})
+        self.assertEqual(f["BVV.profitLoss.assetsPreviousYear"], "0.00")
+        self.assertEqual(f["BVV.profitLoss.contribution"], "30000.00")
+
+    def test_ohne_zuordnung_der_eroeffnung_haelt_an(self):
+        """Ein Konto, das nur in der Eröffnung Saldo hat, braucht trotzdem eine
+        Position — sonst ist das Anfangskapital nicht belegt."""
+        from bhl import ebilanz_xbrl
+        self.csv(EBILANZ_VORJAHR_CSV.replace("3300;", "#3300;"))
+        ebilanz_xbrl.abschluss(self.con, self.gj, self.mdir)      # Jahresende: 3300 ist 0
+        with self.assertRaises(ebilanz_xbrl.EBilanzFehler) as f:
+            ebilanz_xbrl.eigenkapital_vorjahr(self.con, self.gj, self.mdir, self.stamm)
+        self.assertIn("Eröffnungsbuchungen", str(f.exception))
+        self.assertIn("3300", str(f.exception))
+
+    def test_der_vorgang_nimmt_es_mit(self):
+        """bh eric pruefen … ebilanz baut den Datensatz mit diesem Anfangskapital."""
+        with open(os.path.join(self.mdir, "mandant.json"), "w", encoding="utf-8") as fh:
+            json.dump(self.stamm, fh)
+
+        class ErsatzEric:
+            steuernummer = staticmethod(lambda stnr, bufa: "9198011310231")
+
+        z = eric_vorgang.zeitraum(self.con, self.m, 2026, "WJ")
+        ds = eric_vorgang.datensatz(self.con, self.m, self.mdir, z, "ebilanz",
+                                    eric_vorgang.Einstellung("lib", HID), ErsatzEric(),
+                                    test=True, heute=datetime.date(2026, 10, 25))
+        f = self.fakten(ds.xml)
+        self.assertEqual(f["BVV.profitLoss.assetsPreviousYear"], "30000.00")
+        self.assertIsNone(f["BVV.profitLoss.contribution"])
 
 
 if __name__ == "__main__":

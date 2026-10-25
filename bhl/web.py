@@ -833,7 +833,8 @@ def ust_uebersicht(k: Kontext) -> dict:
         # der uebermittelt, aber nicht bezahlt ist, sieht sonst erledigt aus - und
         # genau das ist der Fall, in dem Saeumniszuschlaege entstehen.
         zahllast = st["status"] == "abgegeben" and (kz["steuern"]["83"] or 0) > 0
-        bank = (umsatzsteuer.zahlung_aus_bank(con, k.mandant_id, z)
+        bank = (umsatzsteuer.zahlung_aus_bank(con, k.mandant_id, z,
+                                              zahllast_buch=kz["steuern"]["83"])
                 if zahllast and not st.get("zahlung_am") else None)
         zahlung_am = st.get("zahlung_am") or (bank and bank["buchungsdatum"])
         zahlung_offen = zahllast and not zahlung_am
@@ -845,6 +846,9 @@ def ust_uebersicht(k: Kontext) -> dict:
             "ueberfaellig": st["status"] != "abgegeben" and frist < heute,
             "zahlung_am": zahlung_am, "zahlung_aus_bank": bool(bank),
             "zahlung_offen": zahlung_offen, "lastschrift": e["lastschrift"],
+            # nach einer Teilzahlung ist nur noch der Rest offen
+            "zahlung_offen_cent": (bank["offen_cent"] if bank else kz["steuern"]["83"])
+            if zahlung_offen else 0,
             "zahlung_ueberfaellig": zahlung_offen and frist < heute,
             "status": st["status"], "transferticket": st.get("transferticket"),
             "abgegeben_am": st.get("abgegeben_am"), "notiz": st.get("notiz"),
@@ -874,6 +878,12 @@ def ust_uebersicht(k: Kontext) -> dict:
     return {"zeitraeume": zeilen, "einstellungen": e, "mandant": k.mandant}
 
 
+def _idnr(kennung: str) -> str:
+    """USt-IdNr. ohne Leerraum und in Großbuchstaben - als Schlüssel für den
+    Abgleich zwischen Buchung, Datensatz und übermitteltem Wert."""
+    return "".join(str(kennung).split()).upper()
+
+
 def zm_uebersicht(k: Kontext) -> dict:
     """Alle Zusammenfassenden Meldungen: aus den Buchungen, was zu melden ist,
     aus `voranmeldung`, was gemeldet wurde - über alle Jahre wie die Voranmeldungen."""
@@ -891,11 +901,15 @@ def zm_uebersicht(k: Kontext) -> dict:
         kz = umsatzsteuer.kennzahlen(con, k.mandant_id, z, e["satz"], e["ermaessigt"],
                                      e["reverse_charge_abziehbar"])
         try:
-            gemeldet_euro = {i: b for i, b in eric_xml.zm_zeilen(zm)}
+            gemeldet_euro = {_idnr(i): b for i, b in eric_xml.zm_zeilen(zm)}
             fehler = None
         except eric_xml.DatenFehlen as f:
             gemeldet_euro, fehler = {}, str(f)
+        # Beide Seiten in derselben Schreibweise: eine im Buchungstext mit
+        # Leerzeichen erfasste USt-IdNr. fände sonst ihren Wert nie wieder
         uebermittelt = st.get("kennzahlen")
+        if isinstance(uebermittelt, dict):
+            uebermittelt = {_idnr(i): v for i, v in uebermittelt.items()}
         eigene = [l for l in laeufe if (l["jahr"], l["zeitraum"]) == (z.jahr, z.code)]
         zeilen.append({
             "jahr": z.jahr, "code": z.code, "label": z.label, "bezeichnung": z.bezeichnung,
@@ -905,8 +919,8 @@ def zm_uebersicht(k: Kontext) -> dict:
             "summe": zm["summe"], "kz21": kz["basen"]["21"],
             "meldebetrag_euro": sum(gemeldet_euro.values()), "fehler": fehler,
             "kunden": [{"ust_idnr": c["ust_idnr"], "betrag": c["betrag"],
-                        "euro": gemeldet_euro.get(c["ust_idnr"].replace(" ", "")),
-                        "uebermittelt": (uebermittelt or {}).get(c["ust_idnr"]),
+                        "euro": gemeldet_euro.get(_idnr(c["ust_idnr"])),
+                        "uebermittelt": (uebermittelt or {}).get(_idnr(c["ust_idnr"])),
                         "zeilen": [{x: r[x] for x in ("nummer", "datum", "buchungstext", "betrag",
                                                       "belege", "belegfeld")}
                                    for r in c["zeilen"]]} for c in zm["kunden"]],
@@ -1051,15 +1065,11 @@ def eric_offen(k: Kontext) -> dict:
                 k.mandant_dir, g["jahr"], g["ende"], heute, kapitalgesellschaft=True,
                 umsatzsteuerpflichtig=False)}
             stamm = eric_vorgang.stammdaten(k.mandant_dir)
-            try:
-                gruendung = datetime.datetime.strptime(
-                    stamm.get("gesellschaftsvertrag") or "", "%d.%m.%Y").date().isoformat()
-            except ValueError:
-                gruendung = None
             for art, pflicht in eric_vorgang.JAHRESARTEN.items():
                 code = eric_vorgang.ZEITRAUM[art]
-                # Die Eröffnungsbilanz gibt es nur im Gründungsjahr (§ 5b Abs. 1 Satz 4 EStG)
-                if art == "eroeffnung" and g["beginn"] != gruendung:
+                # Die Eröffnungsbilanz gibt es nur im Gründungsjahr (§ 5b Abs. 1 Satz 4 EStG) -
+                # dieselbe Regel wie in der Fristenliste
+                if art == "eroeffnung" and not fristen.eroeffnungsbilanz_im_jahr(stamm, g["jahr"]):
                     continue
                 st = eric_vorgang.stand(k.mandant_dir, g["jahr"], code, art)
                 if st and st["status"] == "abgegeben":
@@ -1149,6 +1159,12 @@ def eric_aktion(k: Kontext, aktion: str, daten: dict) -> tuple[dict, int]:
         v = eric_vorgang.durchfuehren(
             k.con(), k.mandant_id, k.kuerzel, k.mandant_dir, z, art, aktion, e,
             freigabe=freigabe if aktion == "senden" else None)
+    except eric_vorgang.NichtFestgehalten as f:
+        lauf = getattr(f, "lauf", None)
+        r = getattr(lauf, "ergebnis", None)
+        return {"fehler": str(f), "lauf": _lauf_id(k, lauf.ordner) if lauf else None,
+                "gesendet": True, "transferticket": getattr(r, "transferticket", None),
+                "festgehalten": False}, 409
     except eric_vorgang.VorgangFehler as f:
         lauf = getattr(f, "lauf", None)
         return {"fehler": str(f), "lauf": _lauf_id(k, lauf.ordner) if lauf else None}, 409
@@ -1295,6 +1311,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                      "application/json; charset=utf-8", status)
 
     def do_GET(self):                   # noqa: N802
+        # DNS-Rebinding: eine fremde Seite, deren Name auf 127.0.0.1 umgebogen
+        # wurde, gilt dem Browser als gleiche Herkunft und duerfte jede Antwort
+        # lesen - Steuerdaten, Postfach, Protokolle. Sie schickt aber ihren
+        # eigenen Namen im Host-Kopf mit. Das Token hilft hier nicht: die Seite
+        # selbst wird per GET geladen und bringt es erst mit.
+        if not self._eigener_host():
+            return self._senden("Nur über 127.0.0.1 oder localhost erreichbar.".encode("utf-8"),
+                                "text/plain; charset=utf-8", 403)
         zerlegt = urllib.parse.urlparse(self.path)
         pfad, abfrage = zerlegt.path, zerlegt.query
         teile = [t for t in pfad.split("/") if t]
@@ -1336,13 +1360,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                       f'<meta name="bh-token" content="{self.basis["token"]}">')
         self._senden(seite.encode("utf-8"), "text/html; charset=utf-8")
 
-    def _gleiche_herkunft(self) -> bool:
+    def _erlaubte_hosts(self) -> set[str]:
         port = self.basis["port"]
-        erlaubt = {f"127.0.0.1:{port}", f"localhost:{port}"}
-        if self.headers.get("Host") not in erlaubt:
+        return {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+    def _eigener_host(self) -> bool:
+        return self.headers.get("Host") in self._erlaubte_hosts()
+
+    def _gleiche_herkunft(self) -> bool:
+        if not self._eigener_host():
             return False                 # DNS-Rebinding
         herkunft = self.headers.get("Origin")
-        return not herkunft or herkunft in {f"http://{h}" for h in erlaubt}
+        return not herkunft or herkunft in {f"http://{h}" for h in self._erlaubte_hosts()}
 
     def _eigener_aufruf(self) -> bool:
         return self._gleiche_herkunft() and secrets.compare_digest(
@@ -1359,8 +1388,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                    "geladen wurde. Nichts wurde gesendet — bitte die Seite neu "
                                    "laden.", "neu_laden": True}, 403)
             return self._json({"fehler": "Nur aus der Oberfläche selbst."}, 403)
-        laenge = int(self.headers.get("Content-Length") or 0)
-        if laenge > 10_000 or "json" not in (self.headers.get("Content-Type") or ""):
+        # Fehlt die Länge oder ist sie negativ, liest rfile.read(-1) bis zum
+        # Verbindungsende - der Faden hinge, bis der Client aufgibt.
+        angabe = (self.headers.get("Content-Length") or "").strip()
+        laenge = int(angabe) if angabe.isascii() and angabe.isdigit() else -1
+        if not 0 <= laenge <= 10_000 or "json" not in (self.headers.get("Content-Type") or ""):
             return self._json({"fehler": "ungültige Anfrage"}, 400)
         try:
             daten = json.loads(self.rfile.read(laenge) or b"{}")

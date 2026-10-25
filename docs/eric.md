@@ -102,8 +102,9 @@ Das tut dreierlei:
    Zertifikat und PIN stimmen.
 4. **`senden`** — die Abgabe, ohne Testmerker. Nur in einem Terminal, und erst
    nachdem der angezeigte Betrag (Kz 83 bzw. die Summe der ZM) eingetippt ist.
-   Ist der Zeitraum in `voranmeldungen.csv` schon als abgegeben vermerkt,
-   verweigert `bh` den zweiten Versand; eine Berichtigung geht mit
+   Ist der Zeitraum in `voranmeldungen.csv` schon als abgegeben vermerkt —
+   oder liegt in der Ablage ein angenommener Versand, der nie festgehalten
+   wurde —, verweigert `bh` den zweiten Versand; eine Berichtigung geht mit
    `--berichtigt` (Kz 10 bzw. Meldeart 11).
 
 **Vor jedem `test` und `senden` prüft `bh` erst nur.** ERiC gibt Hinweise

@@ -207,9 +207,13 @@ def cmd_import_karte(a):
         print(f"  ! Abrechnung {nummer} geht nicht auf (Differenz {db.eur(diff)}) - nicht eingelesen")
     for l in z["luecken"]:
         print(f"  ! {l}")
+    for t in z["abgelehnt"]:
+        print(f"  ! {t}")
+    for t in z["berichtigte"]:
+        print(f"  berichtigt: {t}")
     print(f"{z['abrechnungen']} Abrechnungen, Kontrollrechnung OK: {z['neu']} neue Umsaetze, "
           f"{z['vorhanden']} bereits vorhanden, {z['berichtigt']} berichtigt.")
-    if z["unbekannt"] or z["differenz"] or z["luecken"]:
+    if z["unbekannt"] or z["differenz"] or z["luecken"] or z["abgelehnt"]:
         sys.exit(1)
 
 
@@ -657,6 +661,15 @@ def cmd_eric(a):
         v = ev.durchfuehren(con, m["id"], a.mandant, md, z, a.art, a.aktion, e,
                             berichtigt=a.berichtigt, testzertifikat=a.testzertifikat,
                             freigabe=freigabe)
+    except ev.NichtFestgehalten as f:
+        # Gesendet und angenommen - nur das Festhalten ist gescheitert. Hier
+        # darf nichts nach "nichts gesendet" aussehen.
+        print("\nÜbermittlung:")
+        pruefergebnis(f.lauf.ergebnis)
+        print(f"  Transferticket: {f.lauf.ergebnis.transferticket}")
+        print(f"  abgelegt in {os.path.relpath(f.lauf.ordner, WURZEL)}")
+        print(f"\n{f}", file=sys.stderr)
+        sys.exit(2)
     except ev.VorgangFehler as f:
         lauf = getattr(f, "lauf", None)
         if lauf:
