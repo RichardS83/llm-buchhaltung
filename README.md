@@ -465,6 +465,18 @@ und Bankleitzahl gebildet wird. Erkannt wird das automatisch. Jeder Auszug wird
 über `alter Kontostand + Summe der Umsätze = neuer Kontostand` geprüft; die
 Kontrollrechnung steht in der Ausgabe.
 
+Fehlt ein Auszug, schließt der **CSV-Export** der Commerzbank die Lücke:
+`import-bank` nimmt `.csv`-Dateien neben den PDFs. Der Export beschreibt
+dieselben Umsätze mit anderem Text; ein CSV-Umsatz gilt deshalb als vorhanden,
+wenn das Konto am selben Tag schon einen Umsatz über denselben Betrag trägt
+(gezählt, nicht nur gesucht). Der Auszug bleibt die führende Quelle. Weil der
+Export keinen Anfangs- und Endsaldo kennt, prüft `import-bank` ihn an den
+Zeilen „Saldo nach Abschluss“ — schwächer als die Kontrollrechnung eines
+Auszugs; maßgeblich ist, dass der Saldo des Auszugs vor der Lücke plus die
+CSV-Umsätze den Anfangssaldo des Auszugs danach ergibt. Zwei gleiche Umsätze
+am selben Tag (zweimal dieselbe Miete) bekommen ab dem zweiten einen eigenen
+Dublettenschlüssel und fallen nicht mehr heraus.
+
 Ein Bankkonto kann in `mandant.json` als `"nur_archiv": true` geführt werden.
 Dann liegen seine Umsätze vollständig und durchsuchbar in der Datenbank, ohne
 dass `bh pruefen` einen Abgleich mit dem Sachkonto verlangt — so sind die
@@ -623,6 +635,15 @@ Stelle der gesetzlichen Frist, die Pflicht bleibt aber offen — ohne diesen
 Zustand meldet die Liste eine längst verlängerte Frist als überfällig, und die
 gesetzliche Frist bliebe unsichtbar. Die Zeile nennt beide.
 
+Wird die Erklärung danach abgegeben, wechselt die Zeile auf `erledigt`, und
+`erledigt_am` trägt den Abgabetag. Die verlängerte Frist wandert dabei in die
+Spalte `frist` — sonst stünde neben einer fristgerechten Abgabe wieder die
+gesetzliche Frist. Fällt sie auf ein Wochenende, gilt § 108 Abs. 3 AO auch für
+sie. Ersetzt eine spätere Übermittlung eine schon abgegebene Erklärung, zeigen
+`erledigt_am` und `nachweis` die letzte, und `erstmals_am` behält den Tag der
+ersten: mit ihr war die Frist gewahrt. `bh eric senden` pflegt beide Spalten
+selbst.
+
 `bhl/fristen.py` stellt zusammen, was ansteht: Voranmeldungen und ihre
 Zahlungen, Zusammenfassende Meldungen, Steuererklärungen, Aufstellung und
 Offenlegung des Jahresabschlusses.
@@ -678,8 +699,8 @@ richtige Vorgabe: eine vergessene Erklärung fällt so auf, eine erledigte koste
 eine Zeile.
 
 ```
-jahr;art;status;erledigt_am;nachweis;notiz
-2025;koerperschaftsteuer;erledigt;2026-05-29;;Bescheid steht aus
+jahr;art;status;erledigt_am;nachweis;notiz;grundlage;frist;erstmals_am
+2025;koerperschaftsteuer;erledigt;2026-05-29;;Bescheid steht aus;;;
 ```
 
 ## Belegablage

@@ -989,6 +989,10 @@ def eric_lauf(k: Kontext, lauf_id: str) -> dict:
         d = eric_ansicht.detail(k.con(), k.mandant_id, k.mandant_dir, k.kuerzel, lauf_id)
     except eric_ansicht.NichtGefunden as e:
         raise NichtGefunden(str(e)) from None
+    # Der Befehl muss die Datenbank nennen, wenn es nicht die Vorgabe ist (privat)
+    db = os.path.splitext(os.path.basename(k.db_pfad))[0]
+    if db != "buchhaltung":
+        d["befehl_senden"] = d["befehl_senden"].replace("./bh ", f"./bh --db {db} ", 1)
     l = d["lauf"]
     eigene = [x for x in eric_ansicht.laeufe(k.mandant_dir)
               if (x["jahr"], x["zeitraum"], x["art"]) == (l["jahr"], l["zeitraum"], l["art"])]
@@ -1023,7 +1027,9 @@ def eric_offen(k: Kontext) -> dict:
     e = umsatzsteuer.einstellungen(k.mandant_dir)
     laeufe = eric_ansicht.laeufe(k.mandant_dir)
     zeilen = []
-    for z in umsatzsteuer.quartale(con, k.mandant_id):
+    # Der private Mandant meldet keine Umsatzsteuer: nur die Einkommensteuer
+    privat = reports.rahmen(con, k.gj_id).ueberschussrechnung
+    for z in ([] if privat else umsatzsteuer.quartale(con, k.mandant_id)):
         for art in ("ustva", "zm"):
             st = umsatzsteuer.stand(con, k.mandant_id, z, art=art)
             if st["status"] == "abgegeben":
@@ -1053,62 +1059,63 @@ def eric_offen(k: Kontext) -> dict:
                                "testzertifikat": bool(t.get("testzertifikat"))},
             })
     # E-Bilanz, KSt und GewSt: Jahrespflichten der Kapitalgesellschaft, offen bis
-    # zum Eintrag in fristen.csv. Erst nach Ende des Wirtschaftsjahres können sie
-    # entstehen. Steht dort schon ein Transferticket bei offenem Status, war die
-    # Erklärung abgegeben und ist zu berichtigen — dann gilt keine Frist mehr.
-    r_ = reports.rahmen(con, k.gj_id)
+    # zum Eintrag in fristen.csv; beim privaten Mandanten die Einkommensteuer.
+    # Erst nach Ende des Wirtschaftsjahres können sie entstehen. Steht dort schon
+    # ein Transferticket bei offenem Status, war die Erklärung abgegeben und ist
+    # zu berichtigen — dann gilt keine Frist mehr.
     erledigt = fristen.erledigungen(k.mandant_dir)
-    if not r_.ueberschussrechnung:
-        for g in con.execute("SELECT id, jahr, beginn, ende FROM geschaeftsjahr WHERE mandant_id=?"
-                             " ORDER BY jahr", (k.mandant_id,)):
-            termine = {t["art"]: t for t in fristen.jahrespflichten(
-                k.mandant_dir, g["jahr"], g["ende"], heute, kapitalgesellschaft=True,
-                umsatzsteuerpflichtig=False)}
-            stamm = eric_vorgang.stammdaten(k.mandant_dir)
-            for art, pflicht in eric_vorgang.JAHRESARTEN.items():
-                code = eric_vorgang.ZEITRAUM[art]
-                # Die Eröffnungsbilanz gibt es nur im Gründungsjahr (§ 5b Abs. 1 Satz 4 EStG) -
-                # dieselbe Regel wie in der Fristenliste
-                if art == "eroeffnung" and not fristen.eroeffnungsbilanz_im_jahr(stamm, g["jahr"]):
-                    continue
-                st = eric_vorgang.stand(k.mandant_dir, g["jahr"], code, art)
-                if st and st["status"] == "abgegeben":
-                    continue
-                eigene = [l for l in laeufe
-                          if (l["jahr"], l["zeitraum"], l["art"]) == (g["jahr"], code, art)]
-                p = next((l for l in eigene if l["modus"] == "pruefen"), None)
-                t = next((l for l in eigene if l["modus"] == "test"), None)
-                if art in ("ebilanz", "eroeffnung"):
-                    try:
-                        betrag = (eric_vorgang.ebilanz_xbrl.abschluss(con, g["id"], k.mandant_dir)
-                                  if art == "ebilanz" else eric_vorgang.ebilanz_xbrl.eroeffnung(
-                                      con, g["id"], k.mandant_dir, stamm)).bilanzsumme
-                    except eric_vorgang.ebilanz_xbrl.EBilanzFehler:
-                        betrag = None
-                else:
-                    # Das zu versteuernde Einkommen steht erst im geprüften Datensatz fest
-                    betrag = p.get("betrag_cent") if p else None
-                termin = termine.get(pflicht)
-                berichtigung = bool(st and st["transferticket"]
-                                    and art not in ("ebilanz", "eroeffnung"))
-                klasse = {"WJ": eric_vorgang.Geschaeftsjahr, "EB": eric_vorgang.Eroeffnungsstichtag,
-                          "VZ": eric_vorgang.Veranlagungszeitraum}[code]
-                zeilen.append({
-                    "jahr": g["jahr"], "zeitraum": code, "label": str(g["jahr"]), "art": art,
-                    "bezeichnung": klasse(g["jahr"], g["beginn"], g["ende"]).bezeichnung,
-                    "betrag_cent": betrag,
-                    "frist": None if berichtigung else termin["faellig"] if termin else None,
-                    "berichtigung": berichtigung,
-                    "status": "offen",
-                    # Die Eröffnungsbilanz steht ab dem ersten Tag fest
-                    "laeuft_noch": art != "eroeffnung"
-                    and datetime.date.fromisoformat(g["ende"]) >= heute,
-                    "pruefung": p and {"id": p["id"], "zeit": p["zeit"],
-                                       "ok": (p.get("ergebnis") or {}).get("ok")},
-                    "test": t and {"id": t["id"], "zeit": t["zeit"],
-                                   "angenommen": (t.get("ergebnis") or {}).get("gesendet"),
-                                   "testzertifikat": bool(t.get("testzertifikat"))},
-                })
+    for g in con.execute("SELECT id, jahr, beginn, ende FROM geschaeftsjahr WHERE mandant_id=?"
+                         " ORDER BY jahr", (k.mandant_id,)):
+        termine = {t["art"]: t for t in fristen.jahrespflichten(
+            k.mandant_dir, g["jahr"], g["ende"], heute, kapitalgesellschaft=not privat,
+            umsatzsteuerpflichtig=False)}
+        stamm = eric_vorgang.stammdaten(k.mandant_dir)
+        for art, pflicht in eric_vorgang.JAHRESARTEN.items():
+            if (art == "est") != privat:
+                continue
+            code = eric_vorgang.ZEITRAUM[art]
+            # Die Eröffnungsbilanz gibt es nur im Gründungsjahr (§ 5b Abs. 1 Satz 4 EStG) -
+            # dieselbe Regel wie in der Fristenliste
+            if art == "eroeffnung" and not fristen.eroeffnungsbilanz_im_jahr(stamm, g["jahr"]):
+                continue
+            st = eric_vorgang.stand(k.mandant_dir, g["jahr"], code, art)
+            if st and st["status"] == "abgegeben":
+                continue
+            eigene = [l for l in laeufe
+                      if (l["jahr"], l["zeitraum"], l["art"]) == (g["jahr"], code, art)]
+            p = next((l for l in eigene if l["modus"] == "pruefen"), None)
+            t = next((l for l in eigene if l["modus"] == "test"), None)
+            if art in ("ebilanz", "eroeffnung"):
+                try:
+                    betrag = (eric_vorgang.ebilanz_xbrl.abschluss(con, g["id"], k.mandant_dir)
+                              if art == "ebilanz" else eric_vorgang.ebilanz_xbrl.eroeffnung(
+                                  con, g["id"], k.mandant_dir, stamm)).bilanzsumme
+                except eric_vorgang.ebilanz_xbrl.EBilanzFehler:
+                    betrag = None
+            else:
+                # Das zu versteuernde Einkommen steht erst im geprüften Datensatz fest
+                betrag = p.get("betrag_cent") if p else None
+            termin = termine.get(pflicht)
+            berichtigung = bool(st and st["transferticket"]
+                                and art not in ("ebilanz", "eroeffnung"))
+            klasse = {"WJ": eric_vorgang.Geschaeftsjahr, "EB": eric_vorgang.Eroeffnungsstichtag,
+                      "VZ": eric_vorgang.Veranlagungszeitraum}[code]
+            zeilen.append({
+                "jahr": g["jahr"], "zeitraum": code, "label": str(g["jahr"]), "art": art,
+                "bezeichnung": klasse(g["jahr"], g["beginn"], g["ende"]).bezeichnung,
+                "betrag_cent": betrag,
+                "frist": None if berichtigung else termin["faellig"] if termin else None,
+                "berichtigung": berichtigung,
+                "status": "offen",
+                # Die Eröffnungsbilanz steht ab dem ersten Tag fest
+                "laeuft_noch": art != "eroeffnung"
+                and datetime.date.fromisoformat(g["ende"]) >= heute,
+                "pruefung": p and {"id": p["id"], "zeit": p["zeit"],
+                                   "ok": (p.get("ergebnis") or {}).get("ok")},
+                "test": t and {"id": t["id"], "zeit": t["zeit"],
+                               "angenommen": (t.get("ergebnis") or {}).get("gesendet"),
+                               "testzertifikat": bool(t.get("testzertifikat"))},
+            })
     zeilen.sort(key=lambda r: (r["frist"] or "", r["art"]))
     return {"zeilen": zeilen, "vorschlaege": eric_ansicht.vorschlaege(k.mandant_dir, laeufe)}
 

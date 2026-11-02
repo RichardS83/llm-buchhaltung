@@ -59,7 +59,7 @@ PIN_FALSCH = 610201106
 # keinen Augenblick. `einrichten()` verlinkt nur sie.
 PLUGINS = (r"libcommonData\.", r"libcheckUStVA_\d{4}\.", r"libcheckZMDO\.",
            r"libcheckBilanz_\d+_\d+\.", r"libcheckElsterDatenabholung\.",
-           r"libcheckKSt_\d{4}\.", r"libcheckGewSt_\d{4}\.")
+           r"libcheckKSt_\d{4}\.", r"libcheckGewSt_\d{4}\.", r"libcheckESt_\d{4}\.")
 PLUGIN_VERZEICHNIS = "bh-plugins"
 
 

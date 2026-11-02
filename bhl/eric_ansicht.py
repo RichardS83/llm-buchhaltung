@@ -199,7 +199,10 @@ def vergleich(art: str, gesendet, buch: dict) -> list[dict]:
     if art == "ustva":
         return _ustva_zeilen(gesendet, buch)
     if art in eric_ertrag.BETRAEGE:
-        reihe = [k for k in eric_ertrag.BETRAEGE[art] if k in gesendet or k in buch]
+        reihe = [k for f in eric_ertrag.BETRAEGE[art]
+                 for k in sorted(set(gesendet) | set(buch),
+                                 key=lambda k: int(k.partition(" (")[2].rstrip(")") or 1))
+                 if k.partition(" (")[0] == f]
         return [{"kz": k, "bezeichnung": "", "buch": buch.get(k), "gesendet": gesendet.get(k),
                  "gleich": buch.get(k) == gesendet.get(k)} for k in reihe]
     if art in ("ebilanz", "eroeffnung"):
@@ -393,7 +396,8 @@ def vorschlaege(mandant_dir: str, alle: list[dict] | None = None) -> list[dict]:
         })
     # Je Jahr in der Reihenfolge, in der abgegeben wird: die Erklärungen vor der
     # E-Bilanz, die ihre Zahlen bestätigt
-    reihe = {a: i for i, a in enumerate(("kst", "gewst", "ebilanz", "eroeffnung", "ustva", "zm"))}
+    reihe = {a: i for i, a in enumerate(("est", "kst", "gewst", "ebilanz", "eroeffnung", "ustva",
+                                                    "zm"))}
     aus.sort(key=lambda v: (-v["jahr"], reihe.get(v["art"], 9), v["zeitraum"]))
     return aus
 

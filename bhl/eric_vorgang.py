@@ -31,7 +31,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from . import eric as eric_mod
-from . import ebilanz_xbrl, eric_ertrag, eric_xml, fristen, reports, steuern
+from . import ebilanz_xbrl, elster, eric_ertrag, eric_xml, fristen, reports, steuern
 from . import umsatzsteuer as ust
 from . import zugang
 
@@ -44,12 +44,13 @@ PRODUKTNAME = "llm-buchhaltung"
 TESTZERTIFIKAT = os.path.join("Beispiel", "ericdemo-python", "test-softidnr-pse.pfx")
 TESTZERTIFIKAT_PIN = "123456"
 
-ARTEN = ("ustva", "zm", "ebilanz", "eroeffnung", "kst", "gewst")
+ARTEN = ("ustva", "zm", "ebilanz", "eroeffnung", "kst", "gewst", "est")
 # Jahreserklärungen: ihr Stand steht in fristen.csv, nicht in voranmeldungen.csv
 JAHRESARTEN = {"ebilanz": "ebilanz", "eroeffnung": "eroeffnungsbilanz",
-               "kst": "koerperschaftsteuer", "gewst": "gewerbesteuer"}
+               "kst": "koerperschaftsteuer", "gewst": "gewerbesteuer",
+               "est": "einkommensteuer"}
 # Welcher Zeitraum zu einer Jahresart gehört
-ZEITRAUM = {"ebilanz": "WJ", "eroeffnung": "EB", "kst": "VZ", "gewst": "VZ"}
+ZEITRAUM = {"ebilanz": "WJ", "eroeffnung": "EB", "kst": "VZ", "gewst": "VZ", "est": "VZ"}
 
 
 class VorgangFehler(Exception):
@@ -270,25 +271,56 @@ def datensatz(con: sqlite3.Connection, mandant_id: int, mandant_dir: str,
                                     "Erklärung.")
             spec = steuern.pruefen(con, z.gj_id, spec, reports.ergebnis(con, z.gj_id))
             angaben = eric_ertrag.angaben_laden(jahr_dir)
-            w = eric_ertrag.werte(spec)
+            gj = {"beginn": z.von.isoformat(), "ende": z.bis.isoformat()}
+            # Trägt die Ausfüllhilfe XML-Namen, ist sie der Datensatz (auch mit
+            # Überleitungsposten); sonst gilt der einfache Fall aus steuern.json.
+            hilfe = elster.auswerten(con, z.gj_id, stamm, jahr_dir, gj)
             gemeinsam = dict(stamm=stamm, jahr=z.jahr, steuernummer=stnr, bufa=bufa,
                              hersteller_id=einstellung.hersteller_id,
                              produkt=einstellung.produkt,
-                             produktversion=einstellung.produktversion, testmerker=testmerker)
-            gj = {"beginn": z.von.isoformat(), "ende": z.bis.isoformat()}
+                             produktversion=einstellung.produktversion, testmerker=testmerker,
+                             ausfuellhilfe=hilfe)
             if art == "kst":
                 xml = eric_ertrag.kst(spec, angaben, gj=gj, elster_stnr=eric.steuernummer,
                                       **gemeinsam)
-                zeilen = [("Jahresergebnis", f"{w['ergebnis']} EUR"),
-                          ("zu versteuerndes Einkommen", f"{w['zve']} EUR"),
-                          ("Verlustvortrag", f"{w['verlust']} EUR")]
             else:
                 xml = eric_ertrag.gewst(spec, angaben, **gemeinsam)
-                zeilen = [("Gewinn aus Gewerbebetrieb", f"{w['zve']} EUR"),
-                          ("Gewerbeverlust", f"{w['verlust']} EUR")]
+            b = eric_ertrag.betraege_aus_xml(xml, art)
+            if art == "kst":
+                zve = int(b["E8007501"])
+                zeilen = [("Jahresergebnis (Anlage GK Zeile 11)", f"{b['E8002001']} EUR"),
+                          ("zu versteuerndes Einkommen", f"{zve} EUR"),
+                          ("Verlustvortrag", f"{b.get('E8009201', '0')} EUR")]
+            else:
+                zve = int(b["E4001703"])
+                zeilen = [("Gewinn aus Gewerbebetrieb", f"{zve} EUR"),
+                          ("Gewerbeverlust", f"{-zve if zve < 0 else 0} EUR")]
             # KSt trägt die Unterfallart im Namen (Datenartversionmatrix.ods)
             return Datensatz(art, z, xml, f"{'KSt_30' if art == 'kst' else 'GewSt'}_{z.jahr}",
-                             w["zve"] * 100, zeilen)
+                             zve * 100, zeilen)
+        if art == "est":
+            # Allein aus der Ausfüllhilfe; steuern.json hält sie über die
+            # Gegenproben gegen die Bücher
+            bufa = elster_block(stamm)["bufa"]
+            stnr = eric.steuernummer(stamm.get("steuernummer") or "", bufa)
+            jahr_dir = os.path.join(mandant_dir, str(z.jahr))
+            spec = steuern.laden(jahr_dir)
+            if not spec:
+                raise VorgangFehler(f"{z.jahr}/steuern.json fehlt — ohne Überleitung keine "
+                                    "Erklärung.")
+            spec = steuern.pruefen(con, z.gj_id, spec, reports.ergebnis(con, z.gj_id))
+            gj = {"beginn": z.von.isoformat(), "ende": z.bis.isoformat()}
+            hilfe = elster.auswerten(con, z.gj_id, stamm, jahr_dir, gj)
+            xml = eric_ertrag.est(spec, stamm=stamm, jahr=z.jahr, steuernummer=stnr, bufa=bufa,
+                                  hersteller_id=einstellung.hersteller_id,
+                                  produkt=einstellung.produkt,
+                                  produktversion=einstellung.produktversion,
+                                  testmerker=testmerker, ausfuellhilfe=hilfe)
+            zve = eric_ertrag._kennzahl(spec, "est_zve")
+            zeilen = [(p["text"], betrag_text(p["ist"]) if isinstance(p.get("ist"), int)
+                       else str(p.get("ist")))
+                      for p in hilfe.get("gegenproben", [])]
+            return Datensatz(art, z, xml, f"ESt_{z.jahr}", zve, zeilen)
     except (eric_xml.DatenFehlen, ebilanz_xbrl.EBilanzFehler) as e:
         raise VorgangFehler(str(e)) from None
     raise VorgangFehler(f"Unbekannte Art {art!r} — {', '.join(ARTEN)}")
@@ -474,11 +506,13 @@ def ausfuehren(eric: eric_mod.Eric, ds: Datensatz, modus: str, mandant_dir: str,
 TITEL = {"ustva": "Umsatzsteuer-Voranmeldung", "zm": "Zusammenfassende Meldung",
          "ebilanz": "E-Bilanz", "eroeffnung": "E-Bilanz (Eröffnungsbilanz)",
          "kst": "Körperschaftsteuererklärung",
-         "gewst": "Gewerbesteuererklärung"}
+         "gewst": "Gewerbesteuererklärung",
+         "est": "Einkommensteuererklärung"}
 # Was zur Freigabe eingetippt wird
 FREIGABE = {"ebilanz": "Bilanzsumme", "eroeffnung": "Bilanzsumme",
             "kst": "zu versteuerndes Einkommen",
-            "gewst": "Gewinn aus Gewerbebetrieb"}
+            "gewst": "Gewinn aus Gewerbebetrieb",
+            "est": "zu versteuerndes Einkommen"}
 
 
 @dataclass

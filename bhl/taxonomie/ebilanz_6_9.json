@@ -1,5 +1,5 @@
 {
- "_hinweis": "HGB-Taxonomie 6.9 (de-gaap-ci/de-gcd 2025-04-01) für die E-Bilanz einer GmbH, Steuerbilanz, Gesamtkostenverfahren. 'mussfelder' sind die Positionen, die das ERiC-Plugin checkBilanz_6_9 als Mussfeld verlangt und die leer (NIL) berichtet werden, wenn die Buchführung keinen Wert hat; 'eltern' die Oberpositionen, die sich nicht aus dem Elementnamen ergeben; 'gewicht' die Rechenrichtung (-1 = wird abgezogen); 'positionen' die bekannten Elementnamen. Ermittelt am 22.10.2026 gegen ERiC 44.3.4.0 mit tools/ebilanz_mussfelder.py. Nachgetragen am 23.10.2026 aus der Prüfmeldung von checkBilanz_6_9 zur Eröffnungsbilanz: bs.ass.currAss.receiv.other.unpaidCapital rechnet im Calculation Network direkt in bs.ass.currAss.receiv.",
+ "_hinweis": "HGB-Taxonomie 6.9 (de-gaap-ci/de-gcd 2025-04-01) für die E-Bilanz einer GmbH, Steuerbilanz, Gesamtkostenverfahren. 'mussfelder' sind die Positionen, die das ERiC-Plugin checkBilanz_6_9 als Mussfeld verlangt und die leer (NIL) berichtet werden, wenn die Buchführung keinen Wert hat; 'eltern' die Oberpositionen, die sich nicht aus dem Elementnamen ergeben; 'gewicht' die Rechenrichtung (-1 = wird abgezogen); 'positionen' die bekannten Elementnamen. Ermittelt am 22.10.2026 gegen ERiC 44.3.4.0 mit tools/ebilanz_mussfelder.py. Nachgetragen am 23.10.2026 aus der Prüfmeldung von checkBilanz_6_9 zur Eröffnungsbilanz: bs.ass.currAss.receiv.other.unpaidCapital rechnet im Calculation Network direkt in bs.ass.currAss.receiv. Nachgetragen am 02.11.2026 aus den Summenprüfungen von checkBilanz_6_9 zur E-Bilanz einer Gesellschaft mit Personal, Abschreibungen, Finanzergebnis und Anlagenabgängen: Aufwandsposten werden positiv berichtet und rechnen mit -1 (staff, deprAmort, netInterest.expenses, amortFinanc, der Gegenposten in beiden disposFixAss); otherOpRevenue rechnet in grossTradingProfit, die Zinserträge und -aufwendungen direkt in is.netIncome.regular.fin.",
  "datenart_version": "Bilanz_6.9",
  "namensraum_gaap": "http://www.xbrl.de/taxonomies/de-gaap-ci-2025-04-01",
  "namensraum_gcd": "http://www.xbrl.de/taxonomies/de-gcd-2025-04-01",
@@ -267,19 +267,27 @@
   "is.netIncome.tax.gewst"
  ],
  "eltern": {
-  "is.netIncome.regular.fin.netInterest.income": "is.netIncome.eat",
+  "is.netIncome.regular.fin.netInterest.income": "is.netIncome.regular.fin",
   "is.netIncome.regular.operatingTC.grossTradingProfit.totalOutput.netSales.grossSales.taxExemptUStG4_8.UStG4_12": "is.netIncome.regular.operatingTC.grossTradingProfit.totalOutput.netSales.grossSales.taxExemptUStG4_8",
   "is.netIncome.regular.operatingTC.otherCost.leaseMoveable.shareholders": "is.netIncome.regular.operatingTC.otherCost.leaseMovable",
   "is.netIncome.regular.operatingTC": "is.netIncome.eat",
   "is.netIncome.eat": "is.netIncome",
   "is.netIncome.regular.fin": "is.netIncome.eat",
   "is.netIncome.tax": "is.netIncome.eat",
-  "bs.ass.currAss.receiv.other.unpaidCapital": "bs.ass.currAss.receiv"
+  "bs.ass.currAss.receiv.other.unpaidCapital": "bs.ass.currAss.receiv",
+  "is.netIncome.regular.fin.netInterest.expenses": "is.netIncome.regular.fin",
+  "is.netIncome.regular.operatingTC.otherOpRevenue": "is.netIncome.regular.operatingTC.grossTradingProfit"
  },
  "gewicht": {
   "is.netIncome.regular.operatingTC.otherCost": -1,
   "bs.eqLiab.equity.subscribed.unpaidCap": -1,
-  "is.netIncome.tax": -1
+  "is.netIncome.tax": -1,
+  "is.netIncome.regular.operatingTC.staff": -1,
+  "is.netIncome.regular.operatingTC.deprAmort": -1,
+  "is.netIncome.regular.fin.netInterest.expenses": -1,
+  "is.netIncome.regular.fin.netParticipation.amortFinanc": -1,
+  "is.netIncome.regular.operatingTC.otherOpRevenue.disposFixAss.bookValue": -1,
+  "is.netIncome.regular.operatingTC.otherCost.disposFixAss.sale": -1
  },
  "gcd_tupel": {
   "genInfo.report.id.reportStatus": "genInfo.report.id.reportStatus.reportStatus.E",

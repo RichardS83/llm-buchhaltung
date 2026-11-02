@@ -21,7 +21,7 @@ KONTEN = [
     ("0900", "Wertpapiere des Anlagevermögens",           "A", "AV_FIN_WP",        None),
     ("1305", "Forderungen gegen verbundene Unternehmen",   "A", "UV_FORD_VERB",     None),
     # Ein Konto je Darlehensvertrag. Zusammen sind sie die Forderung gegen den
-    # Gesellschafter nach § 42 Abs. 3 GmbHG; getrennt tragen sie den jeweils
+    # Gesellschafter nach § 42 Abs. 3 GmbHG; getrennt folgen sie dem jeweils
     # vereinbarten Zinssatz und erlauben eine Tilgungsbestimmung, die ein
     # gemischtes Konto nicht hergibt.
     ("1309", "Ges.er-Darlehen Rahmenvertrag",           "A", "UV_SONST_VG",      None),
@@ -43,6 +43,7 @@ KONTEN = [
     ("2970", "Gewinnvortrag vor Verwendung",              "P", "EK_BILANZGEWINN",  None),
     ("3035", "Gewerbesteuerrückstellung § 4 (5b) EStG",   "P", "RST_STEUERN",      None),
     ("3040", "Körperschaftsteuerrückstellung",            "P", "RST_STEUERN",      None),
+    ("3070", "Sonstige Rückstellungen",                   "P", "RST_SONSTIGE",     None),
     ("3095", "Rückstellungen für Abschluss u. Prüfung",   "P", "RST_SONSTIGE",     None),
     ("3500", "Sonstige Verbindlichkeiten",                "P", "VB_SONSTIGE",      None),
     ("3560", "Darlehen (sonstige VB)",                    "P", "VB_SONSTIGE",      None),

@@ -17,7 +17,7 @@ Aufrufe:
   bh [--db <name>] <befehl> ...
   bh init <mandant> <jahr>                 Mandant + Geschaeftsjahr + Kontenplan anlegen
   bh eb <mandant> <jahr> <eb.csv>          Eroeffnungsbilanzwerte buchen
-  bh import-bank <mandant> <jahr> <pdf...> Commerzbank-Kontoauszuege einlesen
+  bh import-bank <mandant> <jahr> <pdf/csv...> Commerzbank-Kontoauszuege (PDF) oder CSV-Export einlesen
   bh import-karte <mandant> <jahr> <csv>   erfasste Kreditkartenabrechnungen; Jahr 0 = alle
   bh umsaetze <mandant> <jahr> [--offen] [--suche W] [--ab-betrag N]
                                            importierte Bankumsaetze; Jahr 0 = alle
@@ -33,7 +33,7 @@ Aufrufe:
   bh eric einrichten [<mandant>]           ERiC-SDK einbinden, Zertifikat prüfen
   bh eric postfach <mandant>               Postfach von Mein ELSTER abholen
   bh eric pruefen|test|senden <mandant> <jahr> ustva|zm --quartal N
-  bh eric pruefen|test|senden <mandant> <jahr> ebilanz|eroeffnung|kst|gewst
+  bh eric pruefen|test|senden <mandant> <jahr> ebilanz|eroeffnung|kst|gewst|est
         pruefen ... --vorlegen GRUND [--aenderung 'was|bisher|neu' ...]
                                            geprüften Datensatz zur Freigabe vorlegen
                                            UStVA/ZM/E-Bilanz prüfen, testsenden, abgeben
@@ -45,10 +45,12 @@ Aufrufe:
 from __future__ import annotations
 
 import argparse
+import collections
 import errno
 import glob
 import json
 import os
+import sqlite3
 import sys
 import time
 
@@ -169,6 +171,10 @@ def cmd_import_bank(a):
     kopfzeilen = tuple(stamm.get("kontoauszug_kopfzeilen") or ())
     ges_neu = ges_dopp = 0
     for f in dateien:
+        if f.lower().endswith(".csv"):
+            n, d = import_bank_csv(con, m["id"], a.jahr, f)
+            ges_neu += n; ges_dopp += d
+            continue
         auszug = coba.parse_auszug(f, kopfzeilen)
         ok, diff = coba.pruefe(auszug)
         bk = con.execute("SELECT id FROM bankkonto WHERE mandant_id=? AND iban=?",
@@ -177,14 +183,14 @@ def cmd_import_bank(a):
             print(f"  ! IBAN {auszug.iban} nicht konfiguriert - {os.path.basename(f)} uebersprungen")
             continue
         neu = dopp = 0
-        for u in auszug.umsaetze:
+        for u, h in coba.hashes(auszug.umsaetze):
             if not u.buchungsdatum.startswith(str(a.jahr)):
                 continue
             try:
                 con.execute("INSERT INTO banktransaktion (bankkonto_id, auszug, buchungsdatum,"
                             " valuta, betrag_cent, text, hash) VALUES (?,?,?,?,?,?,?)",
                             (bk[0], auszug.nummer, u.buchungsdatum, u.valuta,
-                             u.betrag_cent, u.text, u.hash))
+                             u.betrag_cent, u.text, h))
                 neu += 1
             except Exception:
                 dopp += 1
@@ -193,6 +199,50 @@ def cmd_import_bank(a):
               f"Kontrollrechnung {'OK' if ok else 'DIFFERENZ ' + db.eur(diff)}")
     con.commit()
     print(f"Gesamt: {ges_neu} neue Umsaetze, {ges_dopp} Dubletten.")
+
+
+def import_bank_csv(con, mandant_id, jahr, f):
+    """CSV-Export der Commerzbank: fuellt, was kein Kontoauszug abdeckt.
+
+    Der Export beschreibt dieselben Umsaetze wie der Auszug, aber mit anderem
+    Text - der Dublettenschluessel greift ueber die beiden Formen hinweg nicht.
+    Ein Umsatz gilt deshalb als vorhanden, wenn das Konto am selben Tag schon
+    einen Umsatz ueber denselben Betrag traegt (gezaehlt, nicht nur gesucht:
+    zwei gleiche Umsaetze im Export brauchen zwei in der Datenbank). Der Auszug
+    bleibt die fuehrende Quelle; die CSV schliesst Luecken.
+    """
+    exp = coba.parse_csv(f)
+    name = os.path.basename(f)
+    bk = con.execute("SELECT id FROM bankkonto WHERE mandant_id=? AND iban=?",
+                     (mandant_id, exp.iban)).fetchone()
+    if not bk:
+        print(f"  ! IBAN {exp.iban or '?'} nicht konfiguriert - {name} uebersprungen")
+        return 0, 0
+    fehler = coba.pruefe_csv(exp)
+    vorhanden = collections.Counter(tuple(r) for r in con.execute(
+        "SELECT buchungsdatum, betrag_cent FROM banktransaktion WHERE bankkonto_id=?"
+        " AND buchungsdatum LIKE ?", (bk[0], f"{jahr}%")))
+    neu = dopp = 0
+    for u, h in coba.hashes(exp.umsaetze):
+        if not u.buchungsdatum.startswith(str(jahr)):
+            continue
+        if vorhanden[(u.buchungsdatum, u.betrag_cent)] > 0:
+            vorhanden[(u.buchungsdatum, u.betrag_cent)] -= 1
+            dopp += 1
+            continue
+        try:
+            con.execute("INSERT INTO banktransaktion (bankkonto_id, auszug, buchungsdatum,"
+                        " valuta, betrag_cent, text, hash) VALUES (?,?,?,?,?,?,?)",
+                        (bk[0], "CSV", u.buchungsdatum, u.valuta,
+                         u.betrag_cent, u.text, h))
+            neu += 1
+        except sqlite3.IntegrityError:
+            dopp += 1
+    pruef = (f"{len(exp.abschluesse)} Abschlusssalden, "
+             + ("alle Abschnitte erklaert" if not fehler else "nicht erklaert: " + ", ".join(
+                 f"{t} {db.eur(d)}" for t, d in fehler)))
+    print(f"  {exp.iban} {name}: {neu} neu, {dopp} bereits vorhanden, {pruef}")
+    return neu, dopp
 
 
 def cmd_import_karte(a):
@@ -597,7 +647,7 @@ def cmd_eric(a):
 
     if not (a.mandant and a.jahr and a.art):
         sys.exit("bh eric pruefen|test|senden <mandant> <jahr> ustva|zm --quartal N "
-                 "| ebilanz | eroeffnung | kst | gewst")
+                 "| ebilanz | eroeffnung | kst | gewst | est")
     if not eric.hinweise_bestaetigt(e.bibliothek):
         sys.exit("Zuerst: bh eric einrichten (Datenschutzhinweise nach der ERiC-Lizenz).")
     con = db.connect(DB)
@@ -881,7 +931,7 @@ def main():
     s.add_argument("aktion", choices=["einrichten", "pruefen", "test", "senden", "postfach"])
     s.add_argument("mandant", nargs="?"); s.add_argument("jahr", type=int, nargs="?")
     s.add_argument("art", nargs="?", choices=["ustva", "zm", "ebilanz", "eroeffnung", "kst",
-                                              "gewst"])
+                                              "gewst", "est"])
     s.add_argument("--quartal", type=int, choices=[1, 2, 3, 4])
     s.add_argument("--monat", type=int, choices=range(1, 13))
     s.add_argument("--berichtigt", action="store_true", help="berichtigte Anmeldung (Kz 10)")

@@ -80,6 +80,7 @@ HUELLE = {"Elster", "TransferHeader", "Datei", "DatenTeil", "Nutzdatenblock",
 QUELLEN = {
     "kst": "ElsterErklaerung/KSt/Jahresdokumentation/Jahresdokumentation_E30_{jahr}.ods",
     "gewst": "ElsterErklaerung/GewSt/Jahresdokumentation/Jahresdokumentation_E20_{jahr}.ods",
+    "est": "ElsterErklaerung/ESt/Jahresdokumentation/Jahresdokumentation_E10_{jahr}.ods",
     "ustva": "ElsterAnmeldung/UStVA/Jahresdokumentation/Jahresdokumentation_UStVA_{jahr}.ods",
     # die ZM ist nicht nach Jahren, sondern nach Schemaversion dokumentiert
     "zm": "ElsterExtern/ZMDO/Jahresdokumentation/Jahresdokumentation_ZMDO_{jahr}.ods",
@@ -202,7 +203,17 @@ def _jahresdoku(pfad: str, mtime: float) -> dict:
     felder: dict[tuple[str, str], dict] = {}
     abschnitte: dict[str, str] = {}
     typen: dict[str, str] = {}
+    # Kontexte, die sich wiederholen dürfen (`max. Wiederholbarkeit` > 1):
+    # ein Vordruck selbst (`V`, mehrere Anlagen V) oder eine Gruppe in ihm
+    # (`V/Wk/Schuldzins/Direkt`, ein Darlehen je Eintrag)
+    wiederholt: set[str] = set()
     blaetter = list(_tabellen(pfad))
+    for name, zeilen in blaetter:
+        if not name.endswith(" - Kontexte"):
+            continue
+        for z in zeilen[1:]:
+            if len(z) > 1 and z[0].startswith("/") and z[1].isdigit() and int(z[1]) > 1:
+                wiederholt.add(z[0].strip("/"))
     for name, zeilen in blaetter:
         if name == "Benutzerdefinierte Typen":
             for z in zeilen[1:]:
@@ -245,7 +256,7 @@ def _jahresdoku(pfad: str, mtime: float) -> dict:
                                                      "format": "", "zeile": None})
             eintrag["zeile"] = eintrag["zeile"] or (z[0] or None)
             eintrag["text"] = text or eintrag["text"]
-    return {"felder": felder, "abschnitte": abschnitte}
+    return {"felder": felder, "abschnitte": abschnitte, "wiederholt": wiederholt}
 
 
 def _laden(art: str, jahr: int | None, datenart_version: str | None,
@@ -366,12 +377,27 @@ def _elster(root: ET.Element, art: str, d: dict | None, finanzaemter: dict,
                 titel = f"{abschnitt} › {titel}"
             gehen(k, f"{pfad}/{n}", unter, gruppe, titel, nummern)
 
-    def vordruck(e):
+    def vordruck(e, nr=None):
         n = _name(e)
         titel = VORDRUCKE.get(n) or abschnitte.get(n) or n
+        # „${vordrucknr}. Anlage Kind“: die Nummer setzt das Formular ein
+        titel = re.sub(r"^\$\{\w+\}\.?\s*", "", titel)
+        if nr:
+            titel = f"{titel} ({nr})"
         g = {"titel": titel, "feld": n, "zeilen": []}
         gehen(e, n, n, g, "", {})
         gruppen.append(g)
+
+    def ausfertigungen(erkl):
+        """Wiederholte Vordrucke (mehrere Anlagen V, eine Anlage N je Person) durchzählen."""
+        gesamt: dict[str, int] = {}
+        for v in erkl:
+            gesamt[_name(v)] = gesamt.get(_name(v), 0) + 1
+        zaehler: dict[str, int] = {}
+        for v in erkl:
+            n = _name(v)
+            zaehler[n] = zaehler.get(n, 0) + 1
+            vordruck(v, zaehler[n] if gesamt[n] > 1 else None)
 
     def huelle(e, pfad):
         for k in e:
@@ -381,8 +407,7 @@ def _elster(root: ET.Element, art: str, d: dict | None, finanzaemter: dict,
                     if _name(erkl) == "Anmeldungssteuern" or art == "zm":
                         vordruck(erkl)
                     else:
-                        for v in erkl:
-                            vordruck(v)
+                        ausfertigungen(erkl)
             elif list(k):
                 huelle(k, f"{pfad}/{n}")
             else:

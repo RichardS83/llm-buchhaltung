@@ -90,6 +90,12 @@ class Cent(unittest.TestCase):
             self.assertEqual(coba._c(text), cent)
             self.assertIsInstance(coba._c(text), int)
 
+    def test_csv_betrag(self):
+        """Der CSV-Export schreibt ohne Tausenderpunkt und kuerzt Nullen am Ende."""
+        for text, cent in (("-4711,05", -471105), ("-7,5", -750), ("18,40", 1840),
+                           ("0", 0), ("150000", 15000000), ("-0,5", -50)):
+            self.assertEqual(coba._csv_cent(text), cent)
+
     def test_iban_pruefziffer(self):
         """Aus Kontonummer und BLZ gebildete IBAN muss Modulo 97 erfuellen."""
         iban = coba._iban("12040000", "500050000")
@@ -97,6 +103,57 @@ class Cent(unittest.TestCase):
         umgestellt = iban[4:] + iban[:4]
         zahl = int("".join(str(int(c, 36)) for c in umgestellt))
         self.assertEqual(zahl % 97, 1, f"{iban} hat eine falsche Pruefziffer")
+
+
+class CsvExport(unittest.TestCase):
+    """Commerzbank-CSV: Reihenfolge, Abschlusssalden, gleiche Umsaetze am selben Tag."""
+
+    KOPF = "Buchungstag;Wertstellung;Umsatzart;Buchungstext;Betrag;Währung;IBAN Kontoinhaber;Kategorie\n"
+    IBAN = "DE00123456780000000000"
+
+    def schreibe(self, zeilen):
+        pfad = os.path.join(tempfile.mkdtemp(), "export.csv")
+        with open(pfad, "w", encoding="utf-8-sig") as fh:
+            fh.write(self.KOPF + "".join(f"{z};EUR;{self.IBAN};\n" for z in zeilen))
+        return pfad
+
+    def abschluss(self, tag, saldo):
+        return (f"{tag};{tag};Zinsen/Entgelte;Rechnungsabschluss Konto vom x bis {tag} "
+                f"Saldo nach Abschluss    {saldo}  EUR w/ Genehmigung;0")
+
+    def test_abschluesse_gehen_auf(self):
+        # Neueste zuerst, wie die Bank exportiert
+        pfad = self.schreibe([
+            self.abschluss("28.02.2025", "1.200,00"),
+            "28.02.2025;28.02.2025;Zinsen/Entgelte;Kontoführung;-7,5",
+            "10.02.2025;10.02.2025;Überweisung;Miete;-500",
+            "10.02.2025;10.02.2025;Überweisung;Miete;-500",
+            "03.02.2025;03.02.2025;Gutschrift;Eingang;1007,5",
+            self.abschluss("31.01.2025", "1.200,00"),
+        ])
+        e = coba.parse_csv(pfad)
+        self.assertEqual(e.iban, self.IBAN)
+        self.assertEqual(e.umsaetze[0].buchungsdatum, "2025-01-31")   # zeitlich aufsteigend
+        self.assertEqual([s for _, s in e.abschluesse], [120000, 120000])
+        self.assertEqual(coba.pruefe_csv(e), [])
+
+    def test_fehlender_umsatz_faellt_auf(self):
+        pfad = self.schreibe([
+            self.abschluss("28.02.2025", "1.300,00"),
+            "10.02.2025;10.02.2025;Überweisung;Miete;-500",
+            self.abschluss("31.01.2025", "1.200,00"),
+        ])
+        self.assertEqual(coba.pruefe_csv(coba.parse_csv(pfad)), [("2025-02-28", 60000)])
+
+    def test_gleiche_umsaetze_eigener_schluessel(self):
+        """Zweimal dieselbe Miete am selben Tag sind zwei Umsaetze, keine Dublette."""
+        e = coba.parse_csv(self.schreibe([
+            "10.02.2025;10.02.2025;Überweisung;Miete;-500",
+            "10.02.2025;10.02.2025;Überweisung;Miete;-500",
+        ]))
+        schluessel = [h for _, h in coba.hashes(e.umsaetze)]
+        self.assertEqual(len(set(schluessel)), 2)
+        self.assertEqual(schluessel, [h for _, h in coba.hashes(e.umsaetze)])   # idempotent
 
 
 class Durchlauf(unittest.TestCase):
@@ -585,6 +642,68 @@ class Abgabepaket(unittest.TestCase):
         arten = [e["art"] for e in fristen.jahrespflichten(self.mdir, 2025, "2025-12-31", self.heute)]
         self.assertIn("feststellung", arten)
 
+    def test_verlaengerung_bleibt_nach_der_abgabe(self):
+        """Die Abgabe setzt die Zeile auf `erledigt` und das Datum auf den
+        Abgabetag. Vorher ging dabei die verlaengerte Frist verloren, und die
+        Liste zeigte wieder die gesetzliche - eine fristgerechte Erklaerung sah
+        verspaetet aus. Faellt die verlaengerte Frist auf einen Samstag, gilt
+        § 108 Abs. 3 AO auch fuer sie."""
+        from bhl import fristen
+        self.mandant()
+        with open(os.path.join(self.mdir, "fristen.csv"), "w", encoding="utf-8") as fh:
+            fh.write("# Kommentar bleibt\njahr;art;status;erledigt_am;nachweis;notiz\n"
+                     "2025;koerperschaftsteuer;verlaengert;2026-10-31;;beantragt\n")
+        vorher = {e["art"]: e for e in fristen.jahrespflichten(self.mdir, 2025, "2025-12-31", self.heute)}
+        self.assertEqual(vorher["koerperschaftsteuer"]["faellig"], "2026-11-02")
+        fristen.festhalten(self.mdir, 2025, "koerperschaftsteuer", "erledigt", "2026-11-02",
+                           "ticket", "übermittelt")
+        erl = fristen.erledigungen(self.mdir)[(2025, "koerperschaftsteuer")]
+        self.assertEqual((erl["status"], erl["erledigt_am"], erl["frist"]),
+                         ("erledigt", "2026-11-02", "2026-10-31"))
+        t = {e["art"]: e for e in fristen.jahrespflichten(self.mdir, 2025, "2025-12-31", self.heute)}
+        kst = t["koerperschaftsteuer"]
+        self.assertEqual(kst["status"], "erledigt")
+        self.assertEqual(kst["faellig"], "2026-11-02")
+        self.assertEqual(kst["gesetzlich_faellig"], "2026-07-31")
+        self.assertIn("§ 109 AO", kst["grundlage"])
+        with open(os.path.join(self.mdir, "fristen.csv"), encoding="utf-8") as fh:
+            self.assertTrue(fh.read().startswith("# Kommentar bleibt\n"))
+        # Eine zweite Abgabe (Berichtigung) behaelt die Frist ebenfalls
+        fristen.festhalten(self.mdir, 2025, "koerperschaftsteuer", "erledigt", "2026-12-01",
+                           "ticket2", "ersetzt")
+        self.assertEqual(fristen.erledigungen(self.mdir)[(2025, "koerperschaftsteuer")]["frist"],
+                         "2026-10-31")
+
+    def test_berichtigung_behaelt_den_tag_der_ersten_abgabe(self):
+        """Eine ersetzende Uebermittlung setzte `erledigt_am` auf ihren Tag -
+        eine im Mai fristgerecht abgegebene Erklaerung stand danach mit
+        September neben einer Frist im Juli."""
+        from bhl import fristen
+        self.mandant()
+        fristen.festhalten(self.mdir, 2025, "gewerbesteuer", "erledigt", "2026-05-04", "t1", "erst")
+        self.assertIsNone(fristen.erledigungen(self.mdir)[(2025, "gewerbesteuer")]["erstmals_am"])
+        fristen.festhalten(self.mdir, 2025, "gewerbesteuer", "erledigt", "2026-09-15", "t2", "neu")
+        fristen.festhalten(self.mdir, 2025, "gewerbesteuer", "erledigt", "2026-12-01", "t3", "neu")
+        erl = fristen.erledigungen(self.mdir)[(2025, "gewerbesteuer")]
+        self.assertEqual((erl["erledigt_am"], erl["nachweis"], erl["erstmals_am"]),
+                         ("2026-12-01", "t3", "2026-05-04"))
+        t = {e["art"]: e for e in fristen.jahrespflichten(self.mdir, 2025, "2025-12-31", self.heute)}
+        self.assertEqual(t["gewerbesteuer"]["erstmals_am"], "2026-05-04")
+
+    def test_eric_pin_meldet_den_eintrag_des_mandanten(self):
+        """Fehlt die PIN, nennt die Meldung den Eintrag, den eric_pin zuerst
+        sucht - nicht nur den gemeinsamen Ersatz `bh-eric-pin`."""
+        from unittest import mock
+        from bhl import zugang
+        with mock.patch.object(zugang, "_aus_schluesselbund", return_value=None), \
+                mock.patch.dict(os.environ, {}, clear=False):
+            for k in ("ERIC_PIN", "ERIC_PIN_PROBE"):
+                os.environ.pop(k, None)
+            with self.assertRaises(zugang.ZugangFehlt) as f:
+                zugang.eric_pin("probe")
+        self.assertIn("security add-generic-password -s bh-eric-pin-probe", str(f.exception))
+        self.assertIn("bh-eric-pin", str(f.exception))
+
     def test_eroeffnungsbilanz_gleiche_regel_in_fristen_und_elster(self):
         """Fristenliste und ELSTER-Seite entscheiden mit derselben Regel, ob
         eine Eroeffnungsbilanz faellig ist: das Jahr des Gesellschaftsvertrags
@@ -693,6 +812,40 @@ class Abgabepaket(unittest.TestCase):
         self.assertTrue(d["gegenproben"][0]["ok"])
         self.assertEqual(elster.euro(-29905178), -299052)
         self.assertEqual(elster.euro(1050), 11)
+
+    def test_ausfuellhilfe_liest_angaben_mit_beleg(self):
+        """Ungebuchte Zeilen (Lohnsteuerbescheinigung) kommen aus der Angabendatei."""
+        from bhl import elster
+        jd = os.path.join(self.mdir, "2025")
+        spec = {"angaben": "angaben.json", "formulare": [{"id": "n", "titel": "N", "felder": [
+            {"id": "brutto", "feld": "Bruttoarbeitslohn", "wert": {"angabe": "lstb.a.brutto"}},
+            {"id": "klasse", "feld": "Steuerklasse", "wert": {"angabe": "lstb.a.klasse"}},
+            {"id": "wk", "feld": "Werbungskosten", "wert": {"angabe": "wk"}},
+            {"id": "netto", "feld": "Einkünfte", "wert": {"differenz": ["brutto", "wk"]}}]}],
+            "gegenproben": [{"feld": "netto", "kennzahl": "est_n", "text": "Einkünfte"},
+                            {"feld": "wk", "kennzahl": "est_wk", "vorzeichen": -1,
+                             "text": "Werbungskosten"}]}
+        angaben = {"lstb": {"a": {"brutto": {"cent": 3000050, "beleg": "B2025-0001"},
+                                  "klasse": {"text": "4"}}},
+                   "wk": {"cent": 123000, "quelle": "Pauschbetrag"}}
+        steuern = {"abschnitte": [{"titel": "Einkünfte", "zeilen": [
+            {"text": "N", "betrag": 2877050, "kennzahl": "est_n"},
+            {"text": "WK", "betrag": -123000, "kennzahl": "est_wk"}]}]}
+        for name, inhalt in (("elster.json", spec), ("angaben.json", angaben),
+                             ("steuern.json", steuern)):
+            json.dump(inhalt, open(os.path.join(jd, name), "w", encoding="utf-8"))
+        gj = {"beginn": self.gj["beginn"], "ende": self.gj["ende"]}
+        d = elster.auswerten(self.con, self.gj["id"], {}, jd, gj)
+        f = {x["id"]: x for x in d["formulare"][0]["felder"]}
+        self.assertEqual((f["brutto"]["eintrag"], f["brutto"]["hinweis"]), (30001, "Beleg B2025-0001"))
+        self.assertEqual((f["klasse"]["eintrag"], f["klasse"]["format"]), ("4", "text"))
+        self.assertEqual(f["netto"]["eintrag"], 28771)
+        self.assertTrue(all(p["ok"] for p in d["gegenproben"]), d["gegenproben"])
+        # Ein Betrag in Euro mit Komma statt ganzer Cent hält an.
+        angaben["wk"]["cent"] = 1230.0
+        json.dump(angaben, open(os.path.join(jd, "angaben.json"), "w", encoding="utf-8"))
+        with self.assertRaises(ValueError):
+            elster.auswerten(self.con, self.gj["id"], {}, jd, gj)
 
     def test_ebilanz_meldet_fehlende_zuordnung(self):
         from bhl import ebilanz

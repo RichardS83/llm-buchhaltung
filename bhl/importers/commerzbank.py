@@ -229,20 +229,110 @@ def parse_auszug(pfad: str, kopfzeilen: tuple = ()) -> Auszug:
     return Auszug(iban, nummer, alt, alt_d, neu, neu_d, umsaetze)
 
 
-def parse_csv(pfad: str) -> list[Umsatz]:
-    """Commerzbank-CSV-Export."""
+RE_ABSCHLUSS = re.compile(r"Saldo nach Abschluss\s+([\d.]+,\d{2})(-?)\s*EUR")
+
+
+def _csv_cent(s: str) -> int:
+    """'-4711,05', '-7,5', '18,40' -> Cent. Der Export setzt keine Tausenderpunkte
+    und laesst Nullen am Ende weg."""
+    s = s.strip()
+    neg = s.startswith("-")
+    euro, _, ct = s.lstrip("-").partition(",")
+    wert = int(euro or "0") * 100 + int((ct + "00")[:2])
+    return -wert if neg else wert
+
+
+@dataclass
+class CsvExport:
+    iban: str
+    umsaetze: list[Umsatz]                 # zeitlich aufsteigend
+    abschluesse: list[tuple[int, int]]     # (Index in umsaetze, Saldo nach Abschluss)
+
+
+def parse_csv(pfad: str) -> CsvExport:
+    """Commerzbank-CSV-Export ("Buchungstag;Wertstellung;Umsatzart;Buchungstext;Betrag;...").
+
+    Der Export steht neueste Buchung zuerst und traegt keinen Anfangs- und
+    Endsaldo. Den Saldo liefert nur die Zeile "Rechnungsabschluss ... Saldo nach
+    Abschluss", die die Bank zum Monats- oder Quartalsende einstellt; an ihr
+    haengt `pruefe_csv`.
+    """
     with open(pfad, encoding="utf-8-sig") as fh:
         rows = list(csv.DictReader(fh, delimiter=";"))
-    out = []
+    rows.reverse()
+    iban = next((r.get("IBAN Kontoinhaber", "").replace(" ", "") for r in rows
+                 if r.get("IBAN Kontoinhaber")), "")
+    out, abschluesse = [], []
     for r in rows:
-        betrag = int(round(float(r["Betrag"].replace(",", ".")) * 100))
+        text = " ".join(r["Buchungstext"].split())
         out.append(Umsatz(
             buchungsdatum=_iso(r["Buchungstag"]),
             valuta=r["Wertstellung"],
-            betrag_cent=betrag,
-            text=" ".join(r["Buchungstext"].split()),
+            betrag_cent=_csv_cent(r["Betrag"]),
+            text=text,
+            auszug="CSV",
         ))
-    return out
+        if m := RE_ABSCHLUSS.search(text):
+            abschluesse.append((len(out) - 1, _c(m.group(1)) * (-1 if m.group(2) else 1)))
+    return CsvExport(iban, out, abschluesse)
+
+
+def pruefe_csv(e: CsvExport) -> list[tuple[str, int]]:
+    """Abschlusssalden des CSV-Exports gegeneinander halten.
+
+    Der Export traegt keinen Anfangs- und Endsaldo, nur die Zeilen
+    "Rechnungsabschluss ... Saldo nach Abschluss". Von einem Abschluss zum
+    naechsten muss die Summe der Umsaetze dazwischen die Saldodifferenz ergeben.
+    Welche Umsaetze "dazwischen" liegen, ist im Export aber nicht eindeutig:
+    innerhalb eines Buchungstags ist die Reihenfolge nicht verlaesslich, und
+    die Bank rechnet den Abschluss teils nach Wertstellung ab. Ein Abschnitt
+    gilt deshalb als aufgegangen, wenn ihn eine der beiden Lesarten erklaert -
+    nach Buchungstag (mit beliebiger Zuordnung der Umsaetze der beiden
+    Abschlusstage) oder nach Wertstellung bis zum Abschlussstichtag.
+
+    Das ist schwaecher als die Kontrollrechnung eines Auszugs, die Anfangs- und
+    Endsaldo kennt. Massgeblich bleibt der Anschluss an die Kontoauszuege
+    davor und danach. Zurueck kommen die Abschluesse, die keine Lesart
+    erklaert: (Buchungstag, Saldodifferenz minus Umsatzsumme nach Buchungstag).
+    """
+    u = e.umsaetze
+    wert = lambda d: d[6:] + d[3:5] + d[:2]      # dd.mm.jjjj -> sortierbar; 30.02. bleibt gueltig
+    fehler = []
+    for (i0, s0), (i1, s1) in zip(e.abschluesse, e.abschluesse[1:]):
+        d0, d1 = u[i0].buchungsdatum, u[i1].buchungsdatum
+        zwischen = sum(x.betrag_cent for x in u if d0 < x.buchungsdatum < d1)
+        tag0 = [x.betrag_cent for j, x in enumerate(u) if x.buchungsdatum == d0 and j != i0]
+        tag1 = [x.betrag_cent for j, x in enumerate(u) if x.buchungsdatum == d1 and j != i1]
+        nach_buchung = {zwischen + sum(tag0) - b + a for a in _teilsummen(tag1) for b in _teilsummen(tag0)}
+        v0, v1 = wert(u[i0].valuta), wert(u[i1].valuta)
+        nach_wert = sum(x.betrag_cent for x in u if v0 < wert(x.valuta) <= v1)
+        if s1 - s0 not in nach_buchung and s1 - s0 != nach_wert:
+            fehler.append((d1, s1 - s0 - (zwischen + sum(tag1))))
+    return fehler
+
+
+def _teilsummen(betraege: list[int]) -> set[int]:
+    summen = {0}
+    for b in betraege[:16]:
+        summen |= {x + b for x in summen}
+    return summen
+
+
+def hashes(umsaetze: list[Umsatz]):
+    """Umsaetze mit ihrem Dublettenschluessel.
+
+    Zwei gleiche Umsaetze am selben Tag (zwei Dauerauftraege ueber denselben
+    Betrag, zweimal dieselbe Gebuehr) haben denselben `Umsatz.hash` - der
+    zweite fiele beim Einlesen als Dublette heraus, und der Auszug ginge in
+    der Datenbank nicht mehr auf. Ab dem zweiten Vorkommen innerhalb einer
+    Datei traegt der Schluessel deshalb die laufende Nummer. Das bleibt
+    idempotent: dieselbe Datei erzeugt bei jedem Lauf dieselben Schluessel.
+    """
+    gesehen: dict[str, int] = {}
+    for u in umsaetze:
+        n = gesehen.get(u.hash, 0)
+        gesehen[u.hash] = n + 1
+        yield u, u.hash if n == 0 else hashlib.sha1(f"{u.hash}#{n}".encode()).hexdigest()[:16]
 
 
 def pruefe(a: Auszug) -> tuple[bool, int]:

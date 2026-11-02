@@ -77,7 +77,7 @@ bh eric einrichten beispiel
 Das tut dreierlei:
 
 - Es legt neben `lib/` ein Verzeichnis `bh-plugins/` an und verlinkt dort nur
-  die Plugins, die `bh` braucht (UStVA, ZM, Bilanz). ERiC lädt beim Start jedes
+  die Plugins, die `bh` braucht (UStVA, ZM, Bilanz, KSt, GewSt, ESt). ERiC lädt beim Start jedes
   Plugin einmal an — mit allen rund 220 dauert der Start zwei Minuten, so keinen
   Augenblick.
 - Es zeigt die Hinweise, die die ERiC-Lizenz dem Nutzer vor der ersten
@@ -249,8 +249,12 @@ Der Stand steht nicht in der Datei, er ergibt sich aus den Läufen danach:
   21, 45, 46/47, 84/85, 66, 67, 83). Innergemeinschaftliche Lieferungen,
   Kleinunternehmer und Sondervorauszahlung fehlen.
 - Die ZM meldet nur sonstige Leistungen (Umsatzart `S`).
-- Körperschaft- und Gewerbesteuererklärung nur für den einfachen Fall (siehe
-  unten); die Abholung der Bescheiddaten über ERiC fehlt.
+- Körperschaft- und Gewerbesteuererklärung über die festen Zeilen nur für den
+  einfachen Fall; alles darüber hinaus über die Ausfüllhilfe (siehe unten). Die
+  Abholung der Bescheiddaten über ERiC fehlt.
+- Die Einkommensteuererklärung entsteht allein aus der Ausfüllhilfe; einen
+  einfachen Fall aus `steuern.json` gibt es nicht. Beschränkt Steuerpflichtige
+  (`ESt_beschraenkt`) fehlen.
 
 ## ELSTER-Postfach
 
@@ -315,11 +319,71 @@ Zeitraum ist der Veranlagungszeitraum (`VZ`), Ablage unter
   `anteilseigner_geaendert`, `vertraege_mit_anteilseignern` (Anlage WA,
   Zeile 15), `gegenstand` und `betriebsstaette` (GewSt 1 A), `kst1f` mit den
   Beständen der Anlage KSt 1 F und `bescheiddaten_abholen`.
-* Vorgesehen ist der **einfache Fall**: nur Einkünfte aus Gewerbebetrieb, keine
-  Überleitungsposten, Hinzurechnungen oder Kürzungen, kein Verlustvortrag aus
-  dem Vorjahr, eine Betriebsstätte. Alles andere hält mit einer Meldung an.
+* Ohne Ausfüllhilfe trägt der Datensatz den **einfachen Fall**: nur Einkünfte
+  aus Gewerbebetrieb, keine Überleitungsposten, Hinzurechnungen oder Kürzungen,
+  kein Verlustvortrag aus dem Vorjahr, eine Betriebsstätte. Alles andere hält
+  mit einer Meldung an.
+* **Mit Ausfüllhilfe** (`<jahr>/elster.json`) ist sie der Datensatz: jedes Feld
+  mit `xml` (Feldname, etwa `E8561211`) an einem Formular mit `vordruck` (`GK`)
+  geht in die Erklärung — § 8b-Korrekturen, nicht abziehbare Aufwendungen,
+  ausländische Steuer, Verträge mit Anteilseignern, Hinzurechnungen. Wo das Feld
+  im Datensatz steht und welches Format es hat (`GeldBetragOhneCent`,
+  `…MitCent`, Text), liest `eric_ertrag` aus der Jahresdokumentation des SDK;
+  die Reihenfolge stellt `eric_schema` aus dem Schema `E30-<jahr>.xsd` bzw.
+  `E20-<jahr>.xsd` her. Beides kommt mit der SDK-Dokumentation (`ERIC_DOKU` oder
+  neben der Bibliothek) — fehlt sie oder gilt sie einem anderen Jahr, hält der
+  Bau an.
+  * Wiederholte Gruppen (ein Verkauf, eine Beteiligung, ein Vertrag) fasst
+    `einzel` zusammen: gleicher Schlüssel, ein `Einzel`-Element.
+  * Summenzeilen rechnet ERiC in vollen Euro aus den eingetragenen Teilen nach;
+    so rechnet auch die Ausfüllhilfe. Wo eine Regel abrundet oder aufrundet
+    (Anlage GK 166b auf, 166c und 181 ab, die Steuer der Anlage ZVE ab), sagt
+    das `rundung: "auf" | "ab"` am Feld.
+  * Ein Feld, das fehlt oder an einem offenen Punkt hängt, und eine verfehlte
+    Gegenprobe sperren den Datensatz — wie das Formular in Mein ELSTER.
 * Eine **Berichtigung** hat in diesen Erklärungen keine Kennzahl: eine zweite
   Übermittlung vor dem Bescheid ersetzt die erste.
 * Zur Freigabe wird das zu versteuernde Einkommen bzw. der Gewinn aus
   Gewerbebetrieb eingetippt. Nach dem Senden steht die Erklärung mit
   Transferticket in `fristen.csv` (`koerperschaftsteuer`, `gewerbesteuer`).
+
+## Einkommensteuererklärung
+
+`bh --db privat eric pruefen privat <jahr> est` — oder in `bh serve` mit
+`--db privat` auf der Seite *ELSTER-Übermittlungen*, die bei einer
+Überschussrechnung nur die Einkommensteuer anbietet. Datenart `ESt_<jahr>`
+(Schema `E10-<jahr>.xsd`, Plugin `libcheckESt_<jahr>`), Zeitraum `VZ`, Ablage
+unter `<jahr>/elster/<jahr>-VZ-est/`. Gilt für Einzel- und
+Zusammenveranlagung (Unterfallart 10).
+
+* **Alles kommt aus der Ausfüllhilfe** `<jahr>/elster.json`: Hauptvordruck
+  `ESt1A`, die Anlagen (`N`, `V`, `KAP`, `VOR`, `Kind`, `AgB`, `HA_35a`, `S`, `G`
+  …) und der `Vorsatz`. Ohne ein Feld des ESt 1 A mit `xml` hält der Bau an.
+  `bh` setzt nur den Rahmen: Steuernummer und `elster.bufa` aus `mandant.json`,
+  Absender aus dem Namen (mehr als 45 Zeichen: die erste Person).
+* **Identifikationsnummern** stehen im `Vorsatz` (`ID`, bei Zusammenveranlagung
+  `IDEhefrau`), nicht in den Feldern des ESt 1 A, die die Dokumentation als
+  „eingefügt" führt — die setzt ERiC selbst und weist sie im Datensatz zurück.
+* **Was nicht gebucht ist** — Lohnsteuerbescheinigung, Vorsorgebeiträge,
+  Kindergeld, Pauschbeträge — steht in einer Angabendatei, die `angaben` am Kopf
+  der Ausfüllhilfe nennt; ein Feld liest sie mit `{"angabe": "lstb.a.brutto"}`.
+  Jede Angabe ist ein Objekt mit `cent` (ganze Zahl) oder `text` und `beleg`
+  bzw. `quelle`; der Beleg erscheint als Hinweis am Feld. Ein Betrag, der keine
+  ganze Zahl Cent ist, hält an.
+* **Gegenproben** halten die Ausfüllhilfe gegen die Zeilen von `steuern.json`
+  mit `kennzahl` (`est_gde`, `est_zve`, `est_lohnsteuer` …; eine Ausgabezeile mit
+  `vorzeichen: -1`). Zur Freigabe wird die Zeile mit `kennzahl` `est_zve`
+  eingetippt, das zu versteuernde Einkommen.
+* **Mehrfache Vordrucke und Abschnitte.** Welche Kontexte sich wiederholen
+  dürfen, liest `eric_ertrag` aus den Blättern „<Vordruck> - Kontexte" der
+  Jahresdokumentation (`max. Wiederholbarkeit` > 1):
+  * `einzel` am **Formular** macht eine Ausfertigung: zwei Formulare `N` mit
+    `einzel` `a` und `b` ergeben zwei Anlagen N, drei `V` drei Anlagen V.
+  * `einzel` am **Feld** (Text) trennt die tiefste wiederholbare Gruppe des
+    Feldes — `Einzel` oder ein wiederholter Abschnitt wie `VOR/AVor` je
+    Person. Eine Liste (`["a", "1"]`) gilt rechtsbündig für verschachtelte
+    Wiederholungen (`ESt1A/Eink_Ers` je Person, darin `Inl/Einz`). `einzel` an
+    einem Feld ohne wiederholbare Gruppe hält an.
+  * `kontext` am Feld wählt, wo ein Feldname mehrfach vorkommt (`Person` in
+    `AVor` und in `Beitr_g_KV_PV_Inl`); ohne `kontext` hält der Bau dort an.
+* Der Klartext nummeriert mehrfache Vordrucke („Anlage V (3)").

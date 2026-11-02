@@ -73,4 +73,14 @@ def eric_pin(kuerzel: str) -> str:
     `bh-eric-pin`. Zwei Gesellschaften haben meist zwei ELSTER-Konten."""
     name = f"ERIC_PIN_{kuerzel.upper()}"
     SCHLUESSELBUND.setdefault(name, f"bh-eric-pin-{kuerzel}")
-    return hole(name, pflicht=False) or hole("ERIC_PIN")
+    if wert := hole(name, pflicht=False) or hole("ERIC_PIN", pflicht=False):
+        return wert
+    # Die Meldung nennt den Eintrag des Mandanten zuerst: der gemeinsame Ersatz
+    # gilt für alle Mandanten, und wer ihn anlegt, sendet womöglich mit der PIN
+    # der falschen Gesellschaft.
+    dienst = SCHLUESSELBUND[name]
+    raise ZugangFehlt(
+        f"PIN für den Mandanten '{kuerzel}' nicht gefunden. Gesucht wurden die Umgebungsvariablen "
+        f"{name} und ERIC_PIN und die Schlüsselbund-Dienste '{dienst}' und "
+        f"'{SCHLUESSELBUND['ERIC_PIN']}' (Ersatz für alle Mandanten). Für diesen Mandanten "
+        f"hinterlegen:\n  security add-generic-password -s {dienst} -a $USER -U -w")

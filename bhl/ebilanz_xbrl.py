@@ -9,7 +9,8 @@ Finanzverwaltung übermittelt:
 * **GCD** (Stammdaten): Unternehmen, Wirtschaftsjahr, Berichtsbestandteile.
   Übermittelt wird eine *Steuerbilanz* (accountingStandard AO) — für eine
   Gesellschaft ohne Abweichungen zwischen Handels- und Steuerbilanz entfällt
-  damit die Überleitungsrechnung.
+  damit die Überleitungsrechnung. Weichen beide ab, werden die Salden um
+  `<jahr>/steuerbilanz.csv` berichtigt, bevor sie berichtet werden.
 * **GAAP**: Bilanz und GuV mit allen Oberpositionen, der Betriebsvermögens-
   vergleich und der seit Wirtschaftsjahren ab 2025 verpflichtende
   Kontennachweis (`detailedInformation.accountBalances`).
@@ -28,6 +29,7 @@ Ertrag steht positiv und wird addiert.
 
 from __future__ import annotations
 
+import csv
 import datetime
 import json
 import os
@@ -90,12 +92,64 @@ def _richtung(el: str, tax: dict, bekannt: set[str]) -> int:
 
 def abschluss(con: sqlite3.Connection, gj_id: int, mandant_dir: str,
               tax: dict | None = None) -> Abschluss:
-    """Positionen und Kontennachweis aus den Konten und `ebilanz.csv`."""
+    """Positionen und Kontennachweis aus den Konten und `ebilanz.csv`, um die
+    Abweichungen der Steuerbilanz berichtigt (`steuerbilanz_abweichungen`)."""
     tax = tax or taxonomie()
     zuordnung = ebilanz_mod.laden(mandant_dir)
     if zuordnung is None:
         raise EBilanzFehler("Keine Taxonomie-Zuordnung: mandanten/<kürzel>/ebilanz.csv fehlt.")
-    return _auswerten(salden(con, gj_id), zuordnung, reports.ergebnis(con, gj_id), tax)
+    jahr = con.execute("SELECT jahr FROM geschaeftsjahr WHERE id=?", (gj_id,)).fetchone()[0]
+    zeilen, ergebnis = salden(con, gj_id), reports.ergebnis(con, gj_id)
+    abw = steuerbilanz_abweichungen(mandant_dir, jahr)
+    if abw:
+        zeilen, ergebnis = _berichtigen(con, gj_id, zeilen, ergebnis, abw, zuordnung)
+    return _auswerten(zeilen, zuordnung, ergebnis, tax)
+
+
+def steuerbilanz_abweichungen(mandant_dir: str, jahr: int) -> dict[str, int]:
+    """Abweichungen der Steuerbilanz von der Handelsbilanz eines Jahres.
+
+    Übermittelt wird eine Steuerbilanz; die Buchführung ist die Handelsbilanz.
+    Wo beide auseinanderfallen (eine nur handelsrechtliche Abschreibung, ein
+    abweichender Rückstellungsansatz), steht die Berichtigung als Soll/Haben
+    je Konto in `<jahr>/steuerbilanz.csv` (konto;betrag;hinweis, Soll positiv).
+    Die Zeilen müssen sich ausgleichen. Was ein GuV-Konto berichtigt, ändert
+    das Ergebnis; was nur Bilanzkonten berührt, trägt einen Unterschied aus
+    einem Vorjahr fort und gehört in jedes Folgejahr, bis er sich auflöst."""
+    pfad = os.path.join(mandant_dir, str(jahr), "steuerbilanz.csv")
+    if not os.path.exists(pfad):
+        return {}
+    with open(pfad, encoding="utf-8") as fh:
+        zeilen = csv.DictReader((z for z in fh if not z.startswith("#")), delimiter=";")
+        aus: dict[str, int] = {}
+        for r in zeilen:
+            konto = (r.get("konto") or "").strip()
+            if konto:
+                aus[konto] = aus.get(konto, 0) + db.cent(r.get("betrag") or "0")
+    if sum(aus.values()):
+        raise EBilanzFehler(f"{jahr}/steuerbilanz.csv gleicht sich nicht aus "
+                            f"(Differenz {_betrag(sum(aus.values()))}).")
+    return aus
+
+
+def _berichtigen(con: sqlite3.Connection, gj_id: int, zeilen, ergebnis: int,
+                 abw: dict[str, int], zuordnung: dict) -> tuple[list[dict], int]:
+    """Kontensalden und Ergebnis der Handelsbilanz -> Steuerbilanz."""
+    aus = {r["nummer"]: {"nummer": r["nummer"], "bezeichnung": r["bezeichnung"],
+                         "saldo": r["saldo"]} for r in zeilen}
+    for konto, c in abw.items():
+        if konto not in zuordnung:
+            raise EBilanzFehler(f"steuerbilanz.csv: Konto {konto} fehlt in ebilanz.csv.")
+        if konto not in aus:
+            bez = con.execute("""SELECT k.bezeichnung FROM konto k JOIN geschaeftsjahr g
+                                 ON g.mandant_id = k.mandant_id
+                                 WHERE g.id = ? AND k.nummer = ?""", (gj_id, konto)).fetchone()
+            aus[konto] = {"nummer": konto, "saldo": 0,
+                          "bezeichnung": bez[0] if bez else zuordnung[konto]["bezeichnung"]}
+        aus[konto]["saldo"] += c
+        if zuordnung[konto]["element"].startswith("is."):
+            ergebnis -= c                       # Aufwand im Soll senkt das Ergebnis
+    return [aus[k] for k in sorted(aus)], ergebnis
 
 
 def _auswerten(zeilen, zuordnung: dict, ergebnis: int, tax: dict, *,

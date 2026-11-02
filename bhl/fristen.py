@@ -94,6 +94,15 @@ def erledigungen(mandant_dir: str) -> dict[tuple[int, str], dict]:
     das Finanzamt Unterlagen nach § 149 Abs. 1 S. 2 AO an und setzt dafuer ein
     Datum, gilt dieses - und § 109 AO waere die falsche Fundstelle. Fehlt die
     Spalte, bleibt es bei § 109 AO.
+
+    Die Spalte `frist` haelt die verlaengerte Frist fest, wenn die Zeile danach
+    auf `erledigt` geht: `erledigt_am` traegt dann den Abgabetag, und ohne
+    `frist` stuende neben einer fristgerechten Abgabe wieder die gesetzliche
+    Frist. `festhalten` uebertraegt sie selbst.
+
+    `erstmals_am` haelt den Tag der ersten Abgabe fest, wenn eine Erklaerung
+    spaeter ersetzt wird: `erledigt_am` und `nachweis` zeigen dann die letzte
+    Uebermittlung, die Frist aber war mit der ersten gewahrt.
     """
     pfad = os.path.join(mandant_dir, "fristen.csv")
     if not os.path.exists(pfad):
@@ -109,6 +118,8 @@ def erledigungen(mandant_dir: str) -> dict[tuple[int, str], dict]:
                 "nachweis": (r.get("nachweis") or "").strip() or None,
                 "notiz": (r.get("notiz") or "").strip() or None,
                 "grundlage": (r.get("grundlage") or "").strip() or None,
+                "frist": (r.get("frist") or "").strip() or None,
+                "erstmals_am": (r.get("erstmals_am") or "").strip() or None,
             }
     return d
 
@@ -117,16 +128,36 @@ def festhalten(mandant_dir: str, jahr: int, art: str, status: str, erledigt_am: 
                nachweis: str, notiz: str) -> None:
     """Eine Zeile in `fristen.csv` setzen - die vorhandene Zeile des Jahres und der
     Art wird ersetzt, sonst angehaengt. Kommentare und uebrige Zeilen bleiben.
-    Die Spalte `grundlage` gehoert zu einer Verlaengerung und entfaellt mit ihr."""
+    Eine Verlaengerung ueberlebt den Wechsel auf `erledigt`: ihr Datum wandert
+    nach `frist`, die Spalte `grundlage` bleibt stehen. Sonst zeigte die Liste
+    nach einer fristgerechten Abgabe die gesetzliche Frist. Ebenso eine
+    Berichtigung: sie traegt ihr Datum in `erledigt_am`, der Tag der ersten
+    Abgabe bleibt in `erstmals_am`."""
     pfad = os.path.join(mandant_dir, "fristen.csv")
-    kopf = "jahr;art;status;erledigt_am;nachweis;notiz;grundlage"
+    kopf = "jahr;art;status;erledigt_am;nachweis;notiz;grundlage;frist;erstmals_am"
+    vorher = erledigungen(mandant_dir).get((jahr, art)) or {}
+    frist = vorher.get("frist") or (vorher.get("erledigt_am")
+                                    if vorher.get("status") == "verlaengert" else None)
+    erstmals = ""
+    if status == "erledigt" and vorher.get("status") == "erledigt":
+        erstmals = vorher.get("erstmals_am") or vorher.get("erledigt_am") or ""
+        if erstmals == erledigt_am:
+            erstmals = ""
     neu = ";".join([str(jahr), art, status, erledigt_am, nachweis,
-                    notiz.replace(";", ",").replace("\n", " "), ""])
+                    notiz.replace(";", ",").replace("\n", " "),
+                    (vorher.get("grundlage") or "") if frist else "",
+                    frist if frist and status != "verlaengert" else "", erstmals])
     zeilen = []
     if os.path.exists(pfad):
         with open(pfad, encoding="utf-8") as fh:
             zeilen = fh.read().splitlines()
-    if not any(z.startswith("jahr;") for z in zeilen):
+    # Ein aelterer Kopf ohne die hinteren Spalten wird ergaenzt - der Leser
+    # wuerde die zusaetzlichen Felder sonst stillschweigend verwerfen.
+    for i, z in enumerate(zeilen):
+        if z.startswith("jahr;"):
+            zeilen[i] = kopf if kopf.startswith(z) else z
+            break
+    else:
         zeilen.append(kopf)
     for i, z in enumerate(zeilen):
         if z.split(";")[:2] == [str(jahr), art]:
@@ -144,11 +175,14 @@ def _eintrag(art, bezeichnung, faellig, grundlage, heute, erledigt=None,
     offen = erl.get("status") not in ("erledigt", "entfaellt")
     gesetzlich = None
     # Eine bewilligte Fristverlaengerung tritt an die Stelle der gesetzlichen
-    # Frist. Die gesetzliche bleibt sichtbar, damit nachvollziehbar ist, wovon
-    # verlaengert wurde.
-    if erl.get("status") == "verlaengert" and erl.get("erledigt_am"):
+    # Frist - auch nach der Abgabe (Spalte `frist`). Die gesetzliche bleibt
+    # sichtbar, damit nachvollziehbar ist, wovon verlaengert wurde. § 108 Abs. 3
+    # AO gilt fuer die verlaengerte Frist ebenso.
+    verlaengert = erl.get("frist") or (erl.get("erledigt_am")
+                                       if erl.get("status") == "verlaengert" else None)
+    if verlaengert:
         gesetzlich = faellig.isoformat()
-        faellig = datetime.date.fromisoformat(erl["erledigt_am"])
+        faellig = werktag(datetime.date.fromisoformat(verlaengert))
         grundlage = (erl.get("grundlage")
                      or f"§ 109 AO (verlängert, gesetzlich {_kurz(gesetzlich)})")
     tage = (faellig - heute).days
@@ -164,8 +198,8 @@ def _eintrag(art, bezeichnung, faellig, grundlage, heute, erledigt=None,
         "status": (erl.get("status") if not offen
                    else "ueberfaellig" if tage < 0
                    else "verlaengert" if gesetzlich else "offen"),
-        "erledigt_am": erl.get("erledigt_am"), "nachweis": erl.get("nachweis"),
-        "notiz": erl.get("notiz"),
+        "erledigt_am": erl.get("erledigt_am"), "erstmals_am": erl.get("erstmals_am"),
+        "nachweis": erl.get("nachweis"), "notiz": erl.get("notiz"),
     }
 
 

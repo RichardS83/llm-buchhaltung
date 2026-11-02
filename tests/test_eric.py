@@ -23,7 +23,8 @@ import xml.etree.ElementTree as ET
 WURZEL = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, WURZEL)
 
-from bhl import eric, eric_ansicht, eric_ertrag, eric_klartext, eric_vorgang, eric_xml  # noqa: E402
+from bhl import elster, eric, eric_ansicht, eric_ertrag, eric_klartext, eric_schema  # noqa: E402
+from bhl import eric_vorgang, eric_xml  # noqa: E402
 
 NS = "{http://www.elster.de/elsterxml/schema/v11}"
 STAMM = {"name": "Muster Software GmbH", "strasse": "Beispielweg 7b", "plz": "10115",
@@ -224,6 +225,8 @@ class Ertragsteuer(unittest.TestCase):
         xml = kst_xml()
         self.assertIn("<E8122104>25000,00</E8122104>", xml)
         self.assertIn("<E8122105>100</E8122105>", xml)
+        self.assertIn("<E8122106>01.03.2025</E8122106><E8122107>31.12.2025</E8122107>",
+                      re.sub(r">\s+<", "><", xml))
         self.assertIn("<E8122109>1121081508151</E8122109>", xml)
         self.assertIn("<E8001105>350</E8001105>", xml)
         self.assertIn("<Unterfallart>30</Unterfallart>", xml)
@@ -278,6 +281,281 @@ class Ertragsteuer(unittest.TestCase):
         self.assertEqual((z.code, z.label), ("VZ", "2025-VZ"))
         self.assertIn("Veranlagungszeitraum 2025", z.bezeichnung)
         self.assertIn("01.03.–31.12.2025", z.bezeichnung)
+
+
+class Einlagekonto(unittest.TestCase):
+    def test_anfangsbestand_nur_bei_eintritt_in_zeile_40(self):
+        """Zeile 40 gilt dem Eintritt in die Steuerpflicht, sonst Zeile 42."""
+        self.assertIn("<E8240102>0</E8240102>", kst_xml())
+        alt = {**ANGABEN, "neu_gegruendet": False,
+               "kst1f": {k: v for k, v in ANGABEN["kst1f"].items()
+                         if k != "eintritt_steuerpflicht"}}
+        xml = kst_xml(angaben=alt)
+        self.assertIn("<E8240103>0</E8240103>", xml)
+        self.assertNotIn("E8240102", xml)
+
+
+# ------------------------------------------------ Ausfüllhilfe als Datensatz
+
+XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="E20" type="T_E20"/>
+  <xs:complexType name="T_E20"><xs:sequence>
+    <xs:element name="Kopf" type="T_Kopf"/><xs:element name="Wert" type="xs:string"/>
+  </xs:sequence></xs:complexType>
+  <xs:complexType name="T_Kopf"><xs:sequence>
+    <xs:element name="A" type="xs:string"/><xs:element name="B" type="xs:string"/>
+  </xs:sequence></xs:complexType>
+</xs:schema>"""
+
+
+class Schemaordnung(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.xsd = os.path.join(self.tmp.name, "E20.xsd")
+        with open(self.xsd, "w", encoding="utf-8") as fh:
+            fh.write(XSD)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_ordnet_jede_ebene_und_behaelt_wiederholungen(self):
+        e = ET.fromstring("<E20><Wert>1</Wert><Kopf><B>b1</B><A>a</A><B>b2</B></Kopf></E20>")
+        eric_schema.sortieren(e, self.xsd)
+        self.assertEqual(ET.tostring(e, encoding="unicode"),
+                         "<E20><Kopf><A>a</A><B>b1</B><B>b2</B></Kopf><Wert>1</Wert></E20>")
+
+    def test_unbekanntes_element_haelt_an(self):
+        for xml in ("<E20><Fremd/></E20>", "<E20><Wert><X/></Wert></E20>", "<E30/>"):
+            with self.assertRaises(eric_xml.DatenFehlen, msg=xml):
+                eric_schema.sortieren(ET.fromstring(xml), self.xsd)
+
+    def test_auswahl_im_schema_haelt_an(self):
+        with open(self.xsd, "w", encoding="utf-8") as fh:
+            fh.write(XSD.replace("<xs:sequence>", "<xs:choice>", 1)
+                     .replace("</xs:sequence>", "</xs:choice>", 1))
+        with self.assertRaises(eric_xml.DatenFehlen):
+            eric_schema.sortieren(ET.fromstring("<E20/>"), self.xsd)
+
+
+def feld(xml, cent=None, text=None, einzel=None, zeile="1", **weiter):
+    """Ein ausgewertetes Feld der Ausfüllhilfe, wie elster.auswerten es liefert."""
+    return {"zeile": zeile, "xml": xml, "einzel": einzel, "betrag_cent": cent,
+            "euro": elster.euro(cent) if cent is not None else None,
+            "eintrag": text if cent is None else elster.euro(cent), **weiter}
+
+
+class Formularwerte(unittest.TestCase):
+    """Volle Euro, wie Mein ELSTER und ERiC sie nachrechnen."""
+
+    def auswerter(self, **euro):
+        aw = elster.Auswerter.__new__(elster.Auswerter)
+        aw.werte, aw.euro = {}, dict(euro)
+        return aw
+
+    def test_summe_aus_gerundeten_teilen(self):
+        aw = self.auswerter(a=1, b=1)                  # je 0,50 EUR, aufgerundet
+        self.assertEqual(aw.euro_wert({"summe": ["a", "b"]}, 100), 2)
+        self.assertEqual(aw.euro_wert({"differenz": ["a", "b"]}, 0), 0)
+
+    def test_rundung_je_feld(self):
+        aw = self.auswerter()
+        self.assertEqual(aw.euro_wert({"konten": []}, 10001), 100)
+        self.assertEqual(aw.euro_wert({"konten": []}, 10001, "auf"), 101)
+        self.assertEqual(aw.euro_wert({"konten": []}, 10099, "ab"), 100)
+        self.assertEqual(aw.euro_wert({"konten": []}, -10001, "ab"), -101)
+
+    def test_prozent_vom_eingetragenen_euro(self):
+        aw = self.auswerter(zve=31337)
+        self.assertEqual(aw.euro_wert({"prozent": ["zve", 15], "rundung": "ab"}, 0), 4700)
+        self.assertEqual(self.auswerter(x=-5).euro_wert({"summe": ["x"], "vorzeichen": -1}, 0), 5)
+
+
+class Zuordnung(unittest.TestCase):
+    INDEX = {("GK", "E8002001"): [("Bilanz", {"format": "GeldBetragOhneCent Minusvorzeichen "
+                                                        "erlaubt"})],
+             ("GK", "E8561202"): [("Beteiligung/Verausserung/Einzel", {"format": "Text"})],
+             ("GK", "E8561204"): [("Beteiligung/Verausserung/Einzel",
+                                   {"format": "GeldBetragMitCent ohne Vorzeichen"})]}
+    NS = "urn:test"
+
+    def einsetzen(self, felder):
+        e = ET.Element(f"{{{self.NS}}}E30")
+        eric_ertrag._einsetzen(e, self.NS, [{"vordruck": "GK", "name": f["xml"],
+                                             "einzel": f["einzel"], "feld": f} for f in felder],
+                               self.INDEX)
+        return re.sub(r"\{urn:test\}|ns0:|xmlns:ns0=\"urn:test\" ?", "",
+                      ET.tostring(e, encoding="unicode"))
+
+    def test_wiederholte_gruppe_je_einzel_schluessel(self):
+        xml = self.einsetzen([feld("E8002001", -123456),
+                              feld("E8561202", text="A AG", einzel="a"),
+                              feld("E8561204", 123456, einzel="a"),
+                              feld("E8561202", text="B AG", einzel="b"),
+                              feld("E8561204", 5, einzel="b")])
+        self.assertIn("<Bilanz><E8002001>-1235</E8002001></Bilanz>", xml)
+        self.assertIn("<Einzel><E8561202>A AG</E8561202><E8561204>1234,56</E8561204></Einzel>"
+                      "<Einzel><E8561202>B AG</E8561202><E8561204>0,05</E8561204></Einzel>", xml)
+
+    def test_haelt_an_statt_zu_raten(self):
+        for falsch in ([feld("E8561202", text="A AG")],                  # ohne einzel
+                       [feld("E8561204", -100, einzel="a")],             # Minus verboten
+                       [feld("E8999999", 100)],                          # unbekannt
+                       [feld("E8002001", 100), feld("E8002001", 200)],   # Widerspruch
+                       [feld("E8561202", text=" ", einzel="a")]):        # leer
+            with self.assertRaises(eric_xml.DatenFehlen, msg=falsch):
+                self.einsetzen(falsch)
+
+    def test_nur_eingabefertige_ausfuellhilfe(self):
+        def hilfe(**anders):
+            return {"formulare": [{"vordruck": "GK", "felder": [
+                {**feld("E8002001", 100), **anders}, {"zeile": "2", "feld": "ohne xml"}]}],
+                "gegenproben": [{"text": "Zeile 1", "ok": True}]}
+        self.assertEqual([x["name"] for x in eric_ertrag.zuordnung(hilfe(), "kst")], ["E8002001"])
+        self.assertEqual(eric_ertrag.zuordnung(hilfe(), "gewst"), [])
+        for anders in ({"fehlt": True}, {"offen_punkt": {"id": "P4"}}):
+            with self.assertRaises(eric_xml.DatenFehlen):
+                eric_ertrag.zuordnung(hilfe(**anders), "kst")
+        h = hilfe()
+        h["gegenproben"][0]["ok"] = False
+        with self.assertRaises(eric_xml.DatenFehlen):
+            eric_ertrag.zuordnung(h, "kst")
+
+
+class WiederholteVordrucke(unittest.TestCase):
+    """Einkommensteuer: Vordrucke je Ausfertigung, Abschnitte je Person (erfundene Werte)."""
+    INDEX = {("V", "Laufende_Nummer_V"): [("", {"format": "String"})],
+             ("V", "E0700206"): [("Einn/Mieteinn/Whg/Sum", {"format": "GeldBetragOhneCent"})],
+             ("V", "E0704508"): [("Wk/Schuldzins/Direkt", {"format": "GeldBetragOhneCent"})],
+             ("VOR", "Person"): [("AVor", {"format": "String"}),
+                                 ("Beitr_g_KV_PV_Inl", {"format": "String"})],
+             ("VOR", "E2000401"): [("AVor", {"format": "GeldBetragOhneCent"})],
+             ("VOR", "E2001203"): [("Beitr_g_KV_PV_Inl/AN", {"format": "GeldBetragOhneCent"})],
+             ("ESt1A", "Person"): [("Eink_Ers", {"format": "String"})],
+             ("ESt1A", "E0104110"): [("Eink_Ers/Inl/Einz", {"format": "String"})],
+             ("ESt1A", "E0104113"): [("Eink_Ers/Inl/Einz", {"format": "GeldBetragOhneCent"})]}
+    WDH = frozenset({"V", "V/Wk/Schuldzins/Direkt", "VOR/AVor", "VOR/Beitr_g_KV_PV_Inl",
+                     "ESt1A/Eink_Ers", "ESt1A/Eink_Ers/Inl/Einz"})
+    NS = "urn:test"
+
+    def einsetzen(self, eintraege):
+        e = ET.Element(f"{{{self.NS}}}E10")
+        eric_ertrag._einsetzen(e, self.NS, eintraege, self.INDEX, self.WDH)
+        return re.sub(r"\{urn:test\}|ns0:|xmlns:ns0=\"urn:test\" ?", "",
+                      ET.tostring(e, encoding="unicode"))
+
+    @staticmethod
+    def x(vordruck, f, formular=None, kontext=None):
+        return {"vordruck": vordruck, "formular_einzel": formular, "name": f["xml"],
+                "einzel": f["einzel"], "kontext": kontext, "feld": f}
+
+    def test_ein_element_je_ausfertigung(self):
+        xml = self.einsetzen([self.x("V", feld("Laufende_Nummer_V", text="1"), "1"),
+                              self.x("V", feld("E0700206", 100000), "1"),
+                              self.x("V", feld("Laufende_Nummer_V", text="2"), "2"),
+                              self.x("V", feld("E0700206", 50000), "2")])
+        self.assertEqual(xml.count("<V>"), 2)
+        self.assertIn("<V><Laufende_Nummer_V>1</Laufende_Nummer_V><Einn><Mieteinn><Whg><Sum>"
+                      "<E0700206>1000</E0700206>", xml)
+        self.assertIn("<Laufende_Nummer_V>2</Laufende_Nummer_V><Einn><Mieteinn><Whg><Sum>"
+                      "<E0700206>500</E0700206>", xml)
+
+    def test_kontext_waehlt_und_einzel_trennt_die_personen(self):
+        person = feld("Person", text="PersonA")
+        with self.assertRaises(eric_xml.DatenFehlen):             # zwei Abschnitte, kein kontext
+            self.einsetzen([self.x("VOR", person)])
+        xml = self.einsetzen([
+            self.x("VOR", feld("Person", text="PersonA", einzel="a"), kontext="AVor"),
+            self.x("VOR", feld("E2000401", 300000, einzel="a")),
+            self.x("VOR", feld("Person", text="PersonB", einzel="b"), kontext="VOR/AVor"),
+            self.x("VOR", feld("E2000401", 200000, einzel="b")),
+            self.x("VOR", feld("Person", text="PersonB", einzel="b"),
+                   kontext="Beitr_g_KV_PV_Inl"),
+            self.x("VOR", feld("E2001203", 40000, einzel="b"))])
+        self.assertIn("<AVor><Person>PersonA</Person><E2000401>3000</E2000401></AVor>"
+                      "<AVor><Person>PersonB</Person><E2000401>2000</E2000401></AVor>", xml)
+        self.assertIn("<Beitr_g_KV_PV_Inl><Person>PersonB</Person><AN><E2001203>400</E2001203>",
+                      xml)
+        with self.assertRaises(eric_xml.DatenFehlen):
+            self.einsetzen([self.x("VOR", person, kontext="Erg_Ang")])
+
+    def test_liste_von_schluesseln_fuer_verschachtelte_wiederholung(self):
+        xml = self.einsetzen([
+            self.x("ESt1A", feld("Person", text="PersonA", einzel="a")),
+            self.x("ESt1A", feld("E0104110", text="Leistung X", einzel=["a", "1"])),
+            self.x("ESt1A", feld("E0104113", 123400, einzel=["a", "1"]))])
+        self.assertIn("<Eink_Ers><Person>PersonA</Person><Inl><Einz><E0104110>Leistung X"
+                      "</E0104110><E0104113>1234</E0104113></Einz></Inl></Eink_Ers>", xml)
+        self.assertEqual(xml.count("<Eink_Ers>"), 1)
+
+    def test_einzel_ohne_wiederholung_haelt_an(self):
+        for falsch in ([self.x("V", feld("E0700206", 100, einzel="a"))],
+                       [self.x("ESt1A", feld("E0104113", 100, einzel=["a", "b", "c"]))]):
+            with self.assertRaises(eric_xml.DatenFehlen, msg=falsch):
+                self.einsetzen(falsch)
+
+    def test_mehrfache_betragsfelder_werden_gezaehlt(self):
+        xml = ("<E10><V><E0701601>-5</E0701601></V><V><E0701601>7</E0701601></V></E10>")
+        self.assertEqual(eric_ertrag.betraege_aus_xml(xml, "est"),
+                         {"E0701601": "-5", "E0701601 (2)": "7"})
+
+    def test_est_braucht_hauptvordruck_und_rahmen(self):
+        stamm = {"name": "Erika Muster", "strasse": "Musterweg 1", "plz": "12345",
+                 "ort": "Musterstadt"}
+        args = dict(stamm=stamm, jahr=2025, steuernummer="9198012345678", bufa="9198",
+                    hersteller_id="74931", produkt="bh", produktversion="1")
+        nur_n = {"formulare": [{"vordruck": "N", "felder": [feld("E0200201", 100000)]}],
+                 "gegenproben": []}
+        for spec, weiter, wort in (({}, {"steuernummer": "123"}, "13 Ziffern"),
+                                   ({}, {"bufa": "91"}, "vier Ziffern"),
+                                   ({"gesperrt": True}, {}, "gesperrt"),
+                                   ({}, {}, "ESt 1 A")):
+            with self.assertRaisesRegex(eric_xml.DatenFehlen, wort):
+                eric_ertrag.est(spec, **{**args, **weiter}, ausfuellhilfe=nur_n)
+
+    def test_zuordnung_traegt_formular_einzel_und_kontext(self):
+        hilfe = {"formulare": [{"vordruck": "N", "einzel": "b", "felder": [
+            {**feld("Person", text="PersonB"), "kontext": ""}]}], "gegenproben": []}
+        x, = eric_ertrag.zuordnung(hilfe, "est")
+        self.assertEqual((x["formular_einzel"], x["kontext"]), ("b", ""))
+
+
+def _sdk_doku(jahr=2025):
+    d = eric_klartext.dokumentation()
+    return d if eric_schema.pfad(d, "gewst", jahr) and eric_schema.pfad(d, "kst", jahr) else None
+
+
+@unittest.skipUnless(_sdk_doku(), "Dokumentation des ERiC-SDK (ERIC_DOKU) fehlt")
+class AusfuellhilfeMitSdkDoku(unittest.TestCase):
+    """Gegen die echte Jahresdokumentation und das echte Schema."""
+
+    def test_gewst_aus_der_ausfuellhilfe(self):
+        hilfe = {"formulare": [{"vordruck": "GewSt1A", "felder": [
+            feld("E4003202", 70000, zeile="50"), feld("E4001703", -123456, zeile="39")]}]}
+        xml = gewst_xml(ausfuellhilfe=hilfe, doku=_sdk_doku())
+        self.assertEqual(eric_ertrag.betraege_aus_xml(xml, "gewst")["E4001703"], "-1235")
+        g1 = next(e for e in ET.fromstring(xml.encode()).iter() if e.tag.endswith("GewSt1A"))
+        namen = [k.tag.rpartition("}")[2] for k in g1]
+        self.assertLess(namen.index("Gewinn"), namen.index("Hinz"), "Schemaordnung")
+        self.assertIn("<E4003202>700</E4003202>", re.sub(r">\s+<", "><", xml))
+
+    def test_kst_einzel_und_summen(self):
+        hilfe = {"formulare": [
+            {"vordruck": "GK", "felder": [
+                feld("E8002001", -123456, zeile="11"),
+                feld("E8561202", text="A AG", einzel="a", zeile="162"),
+                feld("E8561204", 123456, einzel="a", zeile="163")]},
+            {"vordruck": "ZVE", "felder": [feld("E8007501", -123456, zeile="70")]}]}
+        xml = kst_xml(ausfuellhilfe=hilfe, doku=_sdk_doku())
+        b = eric_ertrag.betraege_aus_xml(xml, "kst")
+        self.assertEqual((b["E8002001"], b["E8007501"]), ("-1235", "-1235"))
+        self.assertIn("<E8561204>1234,56</E8561204>", xml)
+        e30 = next(e for e in ET.fromstring(xml.encode()).iter() if e.tag.endswith("E30"))
+        self.assertEqual([k.tag.rpartition("}")[2] for k in e30][-1], "Vorsatz")
+
+    def test_ausfuellhilfe_eines_anderen_jahres_haelt_an(self):
+        hilfe = {"formulare": [{"vordruck": "GewSt1A", "felder": [feld("E4001703", 100)]}]}
+        with self.assertRaises(eric_xml.DatenFehlen):
+            gewst_xml(ausfuellhilfe=hilfe, doku=_sdk_doku(), jahr=1999)
 
 
 class Attrappe:
@@ -392,10 +670,12 @@ class Sitzung(unittest.TestCase):
         os.makedirs(quelle)
         for n in ("libcommonData.dylib", "libcheckUStVA_2026.dylib", "libcheckZMDO.dylib",
                   "libcheckBilanz_6_9.dylib", "libcheckESt_2025.dylib", "libcheckLStA_2026.dylib",
-                  "libcheckKSt_2025.dylib", "libcheckKStZ_2025.dylib", "libcheckGewSt_2025.dylib"):
+                  "libcheckKSt_2025.dylib", "libcheckKStZ_2025.dylib", "libcheckGewSt_2025.dylib",
+                  "libcheckEStbeschraenkt_2025.dylib"):
             open(os.path.join(quelle, n), "w").close()
         gewaehlt = eric.einrichten(os.path.join(self.tmp.name, "lib"))
-        self.assertEqual(gewaehlt, ["libcheckBilanz_6_9.dylib", "libcheckGewSt_2025.dylib",
+        self.assertEqual(gewaehlt, ["libcheckBilanz_6_9.dylib", "libcheckESt_2025.dylib",
+                                    "libcheckGewSt_2025.dylib",
                                     "libcheckKSt_2025.dylib", "libcheckUStVA_2026.dylib",
                                     "libcheckZMDO.dylib", "libcommonData.dylib"])
         self.assertEqual(self.eric(Attrappe()).plugin_pfad,
@@ -645,6 +925,31 @@ class Klartext(unittest.TestCase):
         self.assertEqual(z["E8001105"]["wert_text"], "GmbH")
         technik = next(g for g in k["gruppen"] if g.get("technisch"))
         self.assertEqual(technik["zeilen"][0]["wert_text"], "Finanzamt Musterstadt (Bayern)")
+
+    def test_einkommensteuer_wiederholung_und_ausfertigungen(self):
+        ordner = os.path.join(self.doku, "ElsterErklaerung", "ESt", "Jahresdokumentation")
+        os.makedirs(ordner)
+        kopf = ["Kontext", "Name", "Beschreibung", "max. Zeilen", "Format"]
+        ods(os.path.join(ordner, "Jahresdokumentation_E10_2025.ods"), {
+            "N - Felder": [kopf, ["N", "Person", "Person", "1", "String"],
+                           ["N/ArbL/LStB", "E0200201", "Bruttoarbeitslohn", "1", "Ganzzahl"]],
+            "N - Texte": [["", "Anlage N", "B N1", "N", "/N[1]"]],
+            "N - Kontexte": [["Kontext", "max. Wiederholbarkeit"], ["/N", "2"],
+                             ["/N/ArbL", "1"], ["/N/Wk/Fortb/Einz", "99"]],
+            "Kind - Felder": [kopf, ["Kind/Allg", "E0500107", "Vorname", "1", "String"]],
+            "Kind - Texte": [["", "${vordrucknr}. Anlage Kind", "B Kind1", "Kind", "/Kind[1]"]],
+        })
+        d = eric_klartext._laden("est", 2025, None, self.doku)
+        self.assertEqual(d["wiederholt"], {"N", "N/Wk/Fortb/Einz"})
+        xml = ("<Elster><DatenTeil><Nutzdatenblock><Nutzdaten><E10><N><Person>PersonA</Person>"
+               "<ArbL><LStB><E0200201>100</E0200201></LStB></ArbL></N><N><Person>PersonB"
+               "</Person></N><Kind><Allg><E0500107>Erika</E0500107></Allg></Kind></E10>"
+               "</Nutzdaten></Nutzdatenblock></DatenTeil></Elster>")
+        titel = [g["titel"] for g in eric_klartext.lesbar(xml, "est", 2025, "ESt_2025",
+                                                          doku=self.doku)["gruppen"]]
+        self.assertIn("Anlage N (1)", titel)
+        self.assertIn("Anlage N (2)", titel)
+        self.assertIn("Anlage Kind", titel)
 
     def test_ohne_sdk_bleiben_feldnamen(self):
         k = eric_klartext.lesbar("<Elster><E30><GK><E8002001>1</E8002001></GK></E30></Elster>",
@@ -1158,6 +1463,25 @@ class EBilanz(unittest.TestCase):
         self.assertEqual(a.werte["is.netIncome"], a.ergebnis)
         self.assertEqual(a.werte["is.netIncome.regular.operatingTC.otherCost"], 68500)
         self.assertIsNone(a.werte["bs.ass.fixAss.intan.goodwill"], "Mussfeld, leer berichtet")
+
+    def test_steuerbilanz_abweichung(self):
+        """Eine nur handelsrechtliche Abschreibung: Salden und Ergebnis der
+        Steuerbilanz weichen um sie ab, die Bilanz geht weiter auf."""
+        from bhl import ebilanz_xbrl
+        hb = self.abschluss()
+        os.makedirs(os.path.join(self.mdir, "2025"))
+        pfad = os.path.join(self.mdir, "2025", "steuerbilanz.csv")
+        with open(pfad, "w", encoding="utf-8") as fh:
+            fh.write("konto;betrag;hinweis\n1420;45,00;nur HB abgeschrieben\n6855;-45,00;\n")
+        stb = self.abschluss()
+        self.assertEqual(stb.ergebnis, hb.ergebnis + 4500)
+        self.assertEqual(stb.werte["is.netIncome"], stb.ergebnis)
+        self.assertEqual(stb.bilanzsumme, hb.bilanzsumme + 4500)
+        self.assertNotIn("6855", [nr for nr, _, _, _ in stb.konten], "auf null berichtigt")
+        with open(pfad, "w", encoding="utf-8") as fh:
+            fh.write("konto;betrag;hinweis\n1420;45,00;\n")
+        with self.assertRaises(ebilanz_xbrl.EBilanzFehler):
+            self.abschluss()
 
     def test_eroeffnungsbilanz(self):
         """Eingeforderte Einlagen als Forderung, der Rest offen abgesetzt, keine GuV."""

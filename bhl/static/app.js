@@ -468,7 +468,8 @@ function fristenHtml(f) {
     const erledigt = e.status === 'erledigt' || e.status === 'entfaellt';
     const wann = erledigt
       ? `✓ ${e.status === 'entfaellt' ? 'entfällt' : 'erledigt'}${
-          e.erledigt_am ? ` ${datum(e.erledigt_am)}` : ''}`
+          e.erledigt_am ? ` ${datum(e.erstmals_am || e.erledigt_am)}` : ''}${
+          e.erstmals_am ? `, ersetzt ${datum(e.erledigt_am)}` : ''}`
       : (e.tage < 0 ? `${-e.tage} Tage über der Frist`
         : e.tage === 0 ? 'heute fällig'
         : e.tage === 1 ? 'morgen fällig' : `in ${e.tage} Tagen`);
@@ -525,6 +526,9 @@ SEITEN.uebersicht = async () => {
   const d = await holen('/api/uebersicht');
   const k = d.kennzahlen;
   const m = d.mandant;
+  // erstattung_* ist negativ bei einer Erstattung, positiv bei einer Nachzahlung
+  const saldoText = c => c > 0 ? `Nachzahlung ${eur(c)}` : `Erstattung ${eur(-c)}`;
+  const steuerSaldo = (k.erstattung_kst || 0) + (k.erstattung_solz || 0) + (k.erstattung_gewst || 0);
 
   kopfzeile(d);
 
@@ -596,10 +600,10 @@ SEITEN.uebersicht = async () => {
     <div class="kennzahlen">
       ${kz('Zu versteuerndes Einkommen', eur(k.zve),
            k.ergebnis < 0 ? 'trotz handelsrechtlichem Verlust' : '')}
-      ${kz('Körperschaftsteuer', eur(k.kst), `Erstattung ${eur(Math.abs(k.erstattung_kst || 0))}`)}
-      ${kz('Gewerbesteuer', eur(k.gewst), `Erstattung ${eur(Math.abs(k.erstattung_gewst || 0))}`)}
-      ${kz('Erstattung insgesamt',
-           eur(Math.abs((k.erstattung_kst || 0) + (k.erstattung_solz || 0) + (k.erstattung_gewst || 0))),
+      ${kz('Körperschaftsteuer', eur(k.kst), saldoText(k.erstattung_kst || 0))}
+      ${kz('Gewerbesteuer', eur(k.gewst), saldoText(k.erstattung_gewst || 0))}
+      ${kz(steuerSaldo > 0 ? 'Nachzahlung insgesamt' : 'Erstattung insgesamt',
+           eur(Math.abs(steuerSaldo)),
            'Körperschaft-, Gewerbesteuer und SolZ')}
     </div>`}
 
@@ -1687,6 +1691,7 @@ SEITEN.ustva = async (z) => {
 
 const ERIC_ART = { ustva: ['UStVA', 'Umsatzsteuer-Voranmeldung'], zm: ['ZM', 'Zusammenfassende Meldung'],
   kst: ['KSt', 'Körperschaftsteuererklärung'], gewst: ['GewSt', 'Gewerbesteuererklärung'],
+  est: ['ESt', 'Einkommensteuererklärung'],
   ebilanz: ['E-Bilanz', 'E-Bilanz'], eroeffnung: ['Eröffnungsbilanz', 'E-Bilanz (Eröffnungsbilanz)'] };
 const ERIC_MODUS = {
   pruefen: ['', 'lokal geprüft'], test: ['test', 'Test'], senden: ['gut', 'Abgabe'],
@@ -1763,6 +1768,7 @@ function vorschlagKarte(v, abweichend) {
       <div class="z">${v.betrag_cent !== null && v.betrag_cent !== undefined
         ? `<div class="zahl">${eur(v.betrag_cent)}</div>
            <div class="klein still">${esc({ ebilanz: 'Bilanzsumme', eroeffnung: 'Bilanzsumme', kst: 'zu versteuerndes Einkommen',
+                                             est: 'zu versteuerndes Einkommen',
                                              gewst: 'Gewinn aus Gewerbebetrieb' }[v.art] || 'Betrag')}</div>` : ''}</div>
     </div>
     <p style="margin:10px 0;max-width:82ch">${esc(p.grund)}</p>
@@ -2142,7 +2148,7 @@ SEITEN.lauf = async (z) => {
     <h2>Abgleich: Buchführung heute ↔ Datensatz</h2>
     <div class="karte eng">${ab && ab.fehler ? `<p class="minus" style="margin:12px 14px">${esc(ab.fehler)}</p>` : `
       <table class="t">
-        <thead><tr><th>${{ zm: 'USt-IdNr.', ebilanz: 'Position', eroeffnung: 'Position', kst: 'Feld', gewst: 'Feld' }[l.art] || 'Kz'}</th>${l.art === 'ustva' ? '<th>Bezeichnung</th>' : ''}
+        <thead><tr><th>${{ zm: 'USt-IdNr.', ebilanz: 'Position', eroeffnung: 'Position', kst: 'Feld', gewst: 'Feld', est: 'Feld' }[l.art] || 'Kz'}</th>${l.art === 'ustva' ? '<th>Bezeichnung</th>' : ''}
           <th class="z">Buchführung heute</th><th class="z">im Datensatz</th><th class="z">Abgleich</th></tr></thead>
         <tbody>${(ab ? ab.zeilen : []).map((r) => `
           <tr class="${r.gleich ? '' : 'abweichung'}">
@@ -2254,7 +2260,7 @@ function abgabeAblauf(d, id, fehlerZahl, hinweisZahl, lang) {
           Ich habe Prüfergebnis, Abgleich und Datensatz auf dieser Seite gelesen und gebe
           ${esc(lang)} ${esc(l.bezeichnung)} so frei.</label>
         <label class="bestaetigung">${{ ebilanz: 'Bilanzsumme', eroeffnung: 'Bilanzsumme', kst: 'Zu versteuerndes Einkommen',
-          gewst: 'Gewinn aus Gewerbebetrieb' }[l.art] || 'Betrag'} zur Bestätigung eintippen
+          est: 'Zu versteuerndes Einkommen', gewst: 'Gewinn aus Gewerbebetrieb' }[l.art] || 'Betrag'} zur Bestätigung eintippen
           (<span class="mono">${esc(d.betrag_text)}</span>):
           <input type="text" inputmode="decimal" autocomplete="off" data-betrag
             placeholder="${esc(d.betrag_text)}" style="width:9em"></label>
@@ -2713,7 +2719,8 @@ SEITEN.abgaben = async () => {
       <span class="rechts">
         <span class="marke-chip ${ZUSTAND[a.zustand][1]}">${ZUSTAND[a.zustand][0]}</span>
         ${a.zustand === 'erledigt'
-          ? (a.erledigt_am ? `<span class="marke-chip">${datum(a.erledigt_am)}</span>` : '')
+          ? (a.erledigt_am ? `<span class="marke-chip">${datum(a.erstmals_am || a.erledigt_am)}${
+              a.erstmals_am ? `, ersetzt ${datum(a.erledigt_am)}` : ''}</span>` : '')
           : `<span class="marke-chip ${a.tage < 0 ? 'schlecht' : a.tage <= 30 ? 'warn' : ''}">bis ${datum(a.frist)}</span>`}
       </span></div>
     <div class="meta">${esc(a.empfaenger || '')} · ${esc(a.weg || '')}</div>
@@ -2886,7 +2893,8 @@ function artSetzen(d) {
   KONTEXT.titel = d.titel || {};
   KONTEXT.anlagen = d.anlagen || [];
   document.querySelectorAll('[data-art]').forEach((el) => {
-    el.hidden = el.dataset.art !== KONTEXT.art;
+    // data-art nennt eine oder mehrere Arten: "gesellschaft privat" gilt für beide
+    el.hidden = !el.dataset.art.split(' ').includes(KONTEXT.art);
   });
   const b = document.querySelector('[data-seite="bilanz"]');
   const g = document.querySelector('[data-seite="guv"]');

@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2025-2026 RichardS83
-"""Körperschaftsteuer- und Gewerbesteuererklärung als ERiC-Datensatz.
+"""Körperschaftsteuer-, Gewerbesteuer- und Einkommensteuererklärung als
+ERiC-Datensatz.
+
+Die Einkommensteuer (Datenart `ESt`, Unterfallart 10, Schema E10) kommt ganz
+aus der Ausfüllhilfe, siehe `est()`. Für KSt und GewSt gilt:
 
 Datenarten `KSt` (Unterfallart 30, Schema E30) und `GewSt` (Unterfallart 20,
 Schema E20) des Verfahrens ElsterErklaerung. Vorgesehen ist der einfache Fall
@@ -25,7 +29,12 @@ Woher die Werte kommen:
 Was der einfache Fall nicht abdeckt — Überleitungsposten zwischen
 Jahresergebnis und Einkünften, Hinzurechnungen, ein Verlustvortrag aus dem
 Vorjahr — hält mit `DatenFehlen` an, statt eine unvollständige Erklärung zu
-bauen.
+bauen. Es sei denn, die Ausfüllhilfe (`elster.json`) trägt die Zeilen: dann
+kommen alle Beträge der Anlagen aus ihr. Jedes Feld mit `xml` wird mit
+Kontext und Format aus der Jahresdokumentation des SDK eingesetzt, der
+Datensatz danach nach dem Schema geordnet. Die Ausfüllhilfe muss dafür
+eingabefertig sein und ihre Gegenproben gegen die Überleitung bestehen — was
+übermittelt wird, ist dann genau das, was sie zeigt.
 
 Beide Erklärungen kennen keine Kennzahl „berichtigte Erklärung“: eine zweite
 Übermittlung vor dem Bescheid ersetzt die erste. Dass es eine Berichtigung ist,
@@ -44,6 +53,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
+from . import eric_klartext, eric_schema
 from .eric_xml import NS, DatenFehlen, _hersteller_id, _pflicht, _rahmen, _sub, _text
 
 ANGABEN = "ertragsteuer.json"
@@ -56,11 +66,31 @@ RECHTSFORM = {"Gesellschaft mit beschränkter Haftung": "350",
 
 # Die Felder, die einen Betrag tragen — für den Abgleich mit der Buchführung
 BETRAEGE = {
-    "kst": ("E8002001", "E8109901", "E8004904", "E8005401", "E8006901", "E8007501",
+    "kst": ("E8002001", "E8100301", "E8100501", "E8100601", "E8100702", "E8101001",
+            "E8101101", "E8561212", "E8561410", "E8561301", "E8561411", "E8562101",
+            "E8109901", "E8004904", "E8005401", "E8006901", "E8007301", "E8007501",
+            "E8007504", "E8680303", "E8680404", "E8120401", "E8120601",
             "E8008001", "E8008102", "E8009201", "E8201001", "E8201101", "E8201201", "E8201301",
-            "E8240102", "E8245601"),
-    "gewst": ("E4001703",),
+            "E8240102", "E8240103", "E8245601"),
+    "gewst": ("E4001703", "E4003202", "E4003703"),
+    # Einkommensteuer: die Summenzeilen der Vordrucke (mehrfach: je Ausfertigung)
+    "est": ("E0104801", "E0200201", "E0200301", "E0200401", "E0201401", "E0204812", "E0204803",
+            "E0803202", "E0800502", "E1900701", "E0701401", "E0705701", "E0701601",
+            "E2000401", "E2001203", "E2001505", "E2003104", "E2003202", "E0506105",
+            "E0161304", "E0161305", "E0104109", "E0107208", "E0111215"),
 }
+
+# Die Vordrucke je Erklärung, wie sie im Schema heißen (Formular-`vordruck`
+# in elster.json)
+VORDRUCKE = {"kst": ("KSt1", "GK", "ZVE", "AESt", "WA", "Verluste", "KSt1F"),
+             "gewst": ("GewSt1A",),
+             # Einkommensteuer: Hauptvordruck, Anlagen und der Vorsatz (IdNr der
+             # Personen A und B), alle allein aus der Ausfüllhilfe
+             "est": ("ESt1A", "ESt1A_U", "AgB", "AUS", "AV", "Corona", "EM_35c", "FW", "G",
+                     "HA_35a", "KAP", "KAP_BET", "KAP_I", "Kind", "L", "Mob", "N", "N_AUS",
+                     "N_DHH", "N_GRE", "R", "RAV_bAV", "R_AUS", "S", "SA", "SO", "Sonst",
+                     "Anl_32c", "Anl_34b", "V", "V_FeWo", "V_Sonstige", "VOR", "WA_ESt",
+                     "Zins", "Vorsatz")}
 
 
 def angaben_laden(jahr_dir: str) -> dict:
@@ -122,6 +152,172 @@ def _guv(spec: dict) -> int:
             if z.get("quelle") == "guv":
                 return z["betrag"]
     raise DatenFehlen("steuern.json: keine Zeile mit quelle 'guv' (Jahresergebnis)")
+
+
+def zuordnung(ausfuellhilfe: dict | None, art: str) -> list[dict]:
+    """Die Felder der ausgewerteten Ausfüllhilfe (`elster.auswerten`), die einen
+    XML-Namen tragen: [{vordruck, formular_einzel, name, einzel, kontext, feld}].
+    Leer heißt einfacher Fall.
+
+    `formular_einzel` ist das `einzel` des Formulars: ein Vordruck, der mehrfach
+    abgegeben wird (mehrere Anlagen V, eine Anlage N je Person), bekommt je
+    Schlüssel ein eigenes Element. `kontext` wählt unter mehreren Abschnitten
+    desselben Vordrucks, die ein gleichnamiges Feld tragen (`Person` in
+    `VOR/AVor` und `VOR/Beitr_g_KV_PV_Inl`)."""
+    aus = []
+    for f in (ausfuellhilfe or {}).get("formulare", []):
+        if f.get("vordruck") not in VORDRUCKE[art]:
+            continue
+        for feld in f.get("felder", []):
+            if feld.get("xml"):
+                aus.append({"vordruck": f["vordruck"], "formular_einzel": f.get("einzel"),
+                            "name": feld["xml"], "einzel": feld.get("einzel"),
+                            "kontext": feld.get("kontext"), "feld": feld})
+    if aus:
+        offen = [f"{x['vordruck']} Zeile {x['feld'].get('zeile')}" for x in aus
+                 if x["feld"].get("fehlt") or x["feld"].get("offen_punkt")]
+        if offen:
+            raise DatenFehlen("Die Ausfüllhilfe ist nicht eingabefertig: " + ", ".join(offen))
+        falsch = [p["text"] for p in ausfuellhilfe.get("gegenproben", []) if not p.get("ok")]
+        if falsch:
+            raise DatenFehlen("Gegenprobe der Ausfüllhilfe verfehlt: " + "; ".join(falsch))
+    return aus
+
+
+def _felddoku(art: str, jahr: int, doku: str | None) -> dict:
+    """{(Vordruck, Feldname): [(Kontext ohne Vordruck, Feldbeschreibung)]}."""
+    return _doku(art, jahr, doku)[0]
+
+
+def _doku(art: str, jahr: int, doku: str | None) -> tuple[dict, frozenset]:
+    """Der Feldindex wie `_felddoku` und die Kontexte, die sich laut
+    Jahresdokumentation wiederholen dürfen (`V`, `V/Wk/Schuldzins/Direkt`)."""
+    d = eric_klartext._laden(art, jahr, None, doku)
+    if not d:
+        raise DatenFehlen("Die Jahresdokumentation des ERiC-SDK fehlt — ohne sie lassen sich "
+                          "die Felder der Ausfüllhilfe nicht zuordnen (ERIC_DOKU).")
+    if str(jahr) not in d["quelle"]:
+        raise DatenFehlen(f"Für {jahr} liegt keine Jahresdokumentation vor ({d['quelle']}).")
+    index: dict = {}
+    for (kontext, name), info in d["felder"].items():
+        vordruck, _, rest = kontext.partition("/")
+        index.setdefault((vordruck, name), []).append((rest, info))
+    return index, frozenset(d.get("wiederholt") or ())
+
+
+def _feldtext(info: dict, feld: dict, wo: str) -> str:
+    """Der Wert eines Ausfüllhilfe-Feldes im Format, das das Schema verlangt."""
+    fmt = info.get("format", "")
+    if fmt.startswith(("GeldBetragOhneCent", "GeldBetragMitCent")):
+        if feld.get("betrag_cent") is None:
+            raise DatenFehlen(f"{wo}: kein Betrag ({feld.get('eintrag')!r}).")
+        if fmt.startswith("GeldBetragOhneCent"):
+            betrag, text = feld["euro"], str(feld["euro"])
+        else:
+            betrag = feld["betrag_cent"]
+            text = f"{'-' if betrag < 0 else ''}{abs(betrag) // 100},{abs(betrag) % 100:02d}"
+        if betrag < 0 and "ohne Vorzeichen" in fmt:
+            raise DatenFehlen(f"{wo}: das Feld erlaubt kein Minus ({text}).")
+        return text
+    text = str(feld.get("eintrag") or "").strip()
+    if not text:
+        raise DatenFehlen(f"{wo}: leer.")
+    return text
+
+
+def _einsetzen(wurzel: ET.Element, ns: str, eintraege: list[dict], index: dict,
+               wiederholt: frozenset = frozenset()) -> None:
+    """Setzt die Felder der Ausfüllhilfe unter ihrem Kontext ein.
+
+    Wiederholt wird, was die Jahresdokumentation wiederholbar nennt
+    (`wiederholt`), und jede Ebene namens Einzel…:
+
+    * der Vordruck selbst je `formular_einzel` (ohne: ein gemeinsames Element);
+    * die Ebenen darunter je `einzel` des Feldes — ein Text gilt der tiefsten
+      Ebene namens Einzel…, ohne eine solche der tiefsten wiederholten Ebene;
+      eine Liste gilt den tiefsten wiederholten Ebenen von außen nach innen
+      (`["a", "elterngeld"]`: Person a, darin der Eintrag elterngeld). Eine
+      Ebene ohne Schlüssel ist ein gemeinsames Element; nur die tiefste Ebene
+      namens Einzel… verlangt einen Schlüssel."""
+    gruppen: dict = {}
+
+    def kind(eltern, tag):
+        k = eltern.find(f"{{{ns}}}{tag}")
+        return k if k is not None else _sub(eltern, f"{{{ns}}}{tag}")
+
+    def gruppe(eltern, tag, schluessel):
+        if schluessel is None:
+            return kind(eltern, tag)
+        s = (id(eltern), tag, schluessel)
+        if s not in gruppen:
+            gruppen[s] = _sub(eltern, f"{{{ns}}}{tag}")
+        return gruppen[s]
+
+    for x in eintraege:
+        wo = f"{x['vordruck']} Zeile {x['feld'].get('zeile')} ({x['name']})"
+        stellen = index.get((x["vordruck"], x["name"]))
+        if not stellen:
+            raise DatenFehlen(f"{wo}: das Feld steht nicht in der Jahresdokumentation.")
+        if x.get("kontext") is not None:
+            k = x["kontext"].strip("/")
+            k = k[len(x["vordruck"]):].lstrip("/") if (k + "/").startswith(
+                x["vordruck"] + "/") else k
+            stellen = [s for s in stellen if s[0] == k]
+            if not stellen:
+                raise DatenFehlen(f"{wo}: das Feld steht nicht im Abschnitt {x['kontext']!r}.")
+        if len(stellen) > 1:
+            raise DatenFehlen(f"{wo}: das Feld steht in mehreren Abschnitten "
+                              f"({', '.join(k for k, _ in stellen)}) — `kontext` wählt.")
+        kontext, info = stellen[0]
+        teile = [t for t in kontext.split("/") if t]
+        wdh = [i for i, t in enumerate(teile)
+               if t.startswith("Einzel") or "/".join([x["vordruck"], *teile[:i + 1]]) in wiederholt]
+        tiefstes = max((i for i in wdh if teile[i].startswith("Einzel")), default=None)
+        einzel = x.get("einzel")
+        if isinstance(einzel, list):
+            einzel = [str(e) for e in einzel]
+            if len(einzel) > len(wdh):
+                raise DatenFehlen(f"{wo}: `einzel` hat {len(einzel)} Schlüssel, der Abschnitt "
+                                  f"{kontext or x['vordruck']} nur {len(wdh)} wiederholte "
+                                  "Ebenen.")
+            schluessel = dict(zip(wdh[len(wdh) - len(einzel):], einzel))
+        elif einzel not in (None, ""):
+            if not wdh:
+                raise DatenFehlen(f"{wo}: `einzel`, aber der Abschnitt "
+                                  f"{kontext or x['vordruck']} wiederholt sich nicht.")
+            schluessel = {tiefstes if tiefstes is not None else wdh[-1]: str(einzel)}
+        else:
+            schluessel = {}
+        if tiefstes is not None and tiefstes not in schluessel:
+            raise DatenFehlen(f"{wo}: das Feld steht in einer wiederholten Gruppe ({kontext}) "
+                              "und braucht `einzel`.")
+        knoten = gruppe(wurzel, x["vordruck"], x.get("formular_einzel"))
+        for i, t in enumerate(teile):
+            knoten = gruppe(knoten, t, schluessel.get(i))
+        text = _feldtext(info, x["feld"], wo)
+        blatt = knoten.find(f"{{{ns}}}{x['name']}")
+        if blatt is not None:
+            if (blatt.text or "") != text:
+                raise DatenFehlen(f"{wo}: steht schon mit {blatt.text!r} im Datensatz, die "
+                                  f"Ausfüllhilfe sagt {text!r}.")
+            continue
+        _sub(knoten, f"{{{ns}}}{x['name']}", text)
+
+
+def _ordnen(wurzel: ET.Element, art: str, jahr: int, doku: str | None) -> None:
+    xsd = eric_schema.pfad(doku, art, jahr)
+    if not xsd:
+        raise DatenFehlen(f"Das Schema {eric_schema.QUELLEN[art].format(jahr=jahr)} fehlt in "
+                          "der SDK-Dokumentation — ohne es lässt sich der Datensatz nicht "
+                          "ordnen.")
+    eric_schema.sortieren(wurzel, xsd)
+
+
+def _zahl(eintraege: list[dict], name: str) -> int | None:
+    for x in eintraege:
+        if x["name"] == name:
+            return x["feld"]["euro"]
+    return None
 
 
 def werte(spec: dict) -> dict:
@@ -204,13 +400,29 @@ def _widnr(stamm: dict) -> str | None:
 
 def kst(spec: dict, angaben: dict, *, stamm: dict, gj: dict, jahr: int, steuernummer: str,
         bufa: str, elster_stnr, hersteller_id: str, produkt: str, produktversion: str,
-        testmerker: str | None = None) -> str:
+        testmerker: str | None = None, ausfuellhilfe: dict | None = None,
+        doku: str | None = None) -> str:
     """Datensatz der Datenart KSt_<jahr>. `steuernummer` im ELSTER-Format,
     `gj` mit `beginn` und `ende` des (einzigen) Wirtschaftsjahres.
     `elster_stnr(steuernummer, bufa)` bringt die Steuernummern der
-    Anteilseigner ins ELSTER-Format (in der Regel `Eric.steuernummer`)."""
+    Anteilseigner ins ELSTER-Format (in der Regel `Eric.steuernummer`).
+    `ausfuellhilfe` ist das Ergebnis von `elster.auswerten`; trägt sie
+    XML-Namen, stammen alle Beträge der Anlagen aus ihr."""
     rf = _pruefe_kopf(stamm, steuernummer, bufa)
-    w = werte(spec)
+    eintraege = zuordnung(ausfuellhilfe, "kst")
+    if eintraege:
+        if spec.get("gesperrt"):
+            raise DatenFehlen("Die Überleitung in steuern.json ist gesperrt — erst `bh abgabe` "
+                              "freibekommen.")
+        doku = doku or eric_klartext.dokumentation()
+        index, wiederholt = _doku("kst", jahr, doku)
+        zve_aus = _zahl(eintraege, "E8007501")
+        if zve_aus is None:
+            raise DatenFehlen("Die Ausfüllhilfe trägt kein zu versteuerndes Einkommen "
+                              "(ZVE Zeile 70, E8007501).")
+        w = {"verlust": -zve_aus if zve_aus < 0 else 0}
+    else:
+        w = werte(spec)
     ae = stamm.get("anteilseigner") or []
     if not ae:
         raise DatenFehlen("mandant.json: anteilseigner fehlen (KSt 1, Zeilen 21 ff.).")
@@ -266,6 +478,8 @@ def kst(spec: dict, angaben: dict, *, stamm: dict, gj: dict, jahr: int, steuernu
         s(b, "E8122105", a["prozent"].rstrip("0").rstrip(",") if "," in a["prozent"]
           else a["prozent"])
         s(b, "E8122106", _datum(a["seit"]))
+        # bis zum Ende des Wirtschaftsjahres, wenn kein Abgang eingetragen ist
+        s(b, "E8122107", _datum(a.get("bis") or gj["ende"]))
     s(s(ae_el, "Gesamt"), "E8122601", _jn(angaben.get("anteilseigner_geaendert", True)))
 
     gk = s(e30, "GK")
@@ -273,15 +487,16 @@ def kst(spec: dict, angaben: dict, *, stamm: dict, gj: dict, jahr: int, steuernu
     ga = s(gk, "Allgemein")
     s(ga, "E8000201", _datum(gj["beginn"]))
     s(ga, "E8000202", _datum(gj["ende"]))
-    s(s(gk, "Bilanz"), "E8002001", str(w["ergebnis"]))
-    s(s(gk, "Einkunfte"), "E8109901", str(w["zve"]))
+    if not eintraege:
+        s(s(gk, "Bilanz"), "E8002001", str(w["ergebnis"]))
+        s(s(gk, "Einkunfte"), "E8109901", str(w["zve"]))
 
-    zve = s(e30, "ZVE")
-    sde = s(zve, "SdE")
-    s(s(s(sde, "Gewerbe"), "Laufend"), "E8004904", str(w["zve"]))
-    s(s(sde, "SdE"), "E8005401", str(w["zve"]))
-    s(s(s(zve, "GdE"), "GdE"), "E8006901", str(w["zve"]))
-    s(s(s(zve, "ZVE"), "ZVE"), "E8007501", str(w["zve"]))
+        zve = s(e30, "ZVE")
+        sde = s(zve, "SdE")
+        s(s(s(sde, "Gewerbe"), "Laufend"), "E8004904", str(w["zve"]))
+        s(s(sde, "SdE"), "E8005401", str(w["zve"]))
+        s(s(s(zve, "GdE"), "GdE"), "E8006901", str(w["zve"]))
+        s(s(s(zve, "ZVE"), "ZVE"), "E8007501", str(w["zve"]))
 
     if w["verlust"]:
         v = s(e30, "Verluste")
@@ -313,20 +528,38 @@ def kst(spec: dict, angaben: dict, *, stamm: dict, gj: dict, jahr: int, steuernu
     s(g, "E8201201", str(f["einlagekonto"]))
     s(g, "E8201301", str(ausschuettbar))
     tab = s(s(k1f, "ELK"), "Tabelle")
-    s(s(tab, "Anfang"), "E8240102", str(f["einlagekonto_anfang"]))
+    # Zeile 40 gilt nur beim Eintritt in die Steuerpflicht; sonst ist der
+    # Anfangsbestand der Bestand zum Schluss des Vorjahres (Zeile 42)
+    s(s(tab, "Anfang"), "E8240102" if f.get("eintritt_steuerpflicht") else "E8240103",
+      str(f["einlagekonto_anfang"]))
     s(s(tab, "Ende"), "E8245601", str(f["einlagekonto_ende"]))
 
     _vorsatz(e30, ns, "30", stamm=stamm, steuernummer=steuernummer, jahr=jahr,
              bescheid=bool(angaben.get("bescheiddaten_abholen")))
+    if eintraege:
+        _einsetzen(e30, ns, eintraege, index, wiederholt)
+        _ordnen(e30, "kst", jahr, doku)
     return _text(wurzel)
 
 
 def gewst(spec: dict, angaben: dict, *, stamm: dict, jahr: int, steuernummer: str,
           bufa: str, hersteller_id: str, produkt: str, produktversion: str,
-          testmerker: str | None = None) -> str:
+          testmerker: str | None = None, ausfuellhilfe: dict | None = None,
+          doku: str | None = None) -> str:
     """Datensatz der Datenart GewSt_<jahr>: eine Betriebsstätte in einer Gemeinde."""
     rf = _pruefe_kopf(stamm, steuernummer, bufa)
-    w = werte(spec)
+    eintraege = zuordnung(ausfuellhilfe, "gewst")
+    if eintraege:
+        if spec.get("gesperrt"):
+            raise DatenFehlen("Die Überleitung in steuern.json ist gesperrt — erst `bh abgabe` "
+                              "freibekommen.")
+        doku = doku or eric_klartext.dokumentation()
+        index, wiederholt = _doku("gewst", jahr, doku)
+        if _zahl(eintraege, "E4001703") is None:
+            raise DatenFehlen("Die Ausfüllhilfe trägt keinen Gewinn aus Gewerbebetrieb "
+                              "(GewSt 1 A Zeile 39, E4001703).")
+    else:
+        w = werte(spec)
     bst = angaben.get("betriebsstaette") or {}
     _vorhanden(bst, f"{ANGABEN}, betriebsstaette", "plz", "ort")
     if not angaben.get("gegenstand"):
@@ -358,16 +591,73 @@ def gewst(spec: dict, angaben: dict, *, stamm: dict, jahr: int, steuernummer: st
     s(b, "E4001102", "2")                          # nicht verlegt
     s(b, "E4001110", bst["plz"])
     s(b, "E4001111", bst["ort"])
-    s(s(g1, "Gewinn"), "E4001703", str(w["zve"]))
+    if not eintraege:
+        s(s(g1, "Gewinn"), "E4001703", str(w["zve"]))
 
     _vorsatz(e20, ns, "20", stamm=stamm, steuernummer=steuernummer, jahr=jahr,
              bescheid=bool(angaben.get("bescheiddaten_abholen")))
+    if eintraege:
+        _einsetzen(e20, ns, eintraege, index, wiederholt)
+        _ordnen(e20, "gewst", jahr, doku)
+    return _text(wurzel)
+
+
+def est(spec: dict, *, stamm: dict, jahr: int, steuernummer: str, bufa: str,
+        hersteller_id: str, produkt: str, produktversion: str,
+        testmerker: str | None = None, ausfuellhilfe: dict | None = None,
+        doku: str | None = None) -> str:
+    """Datensatz der Datenart ESt_<jahr> (Schema E10, Unterfallart 10).
+
+    Anders als KSt und GewSt gibt es keinen einfachen Fall aus steuern.json:
+    jedes Feld — Hauptvordruck, Anlagen, auch die Identifikationsnummern im
+    Vorsatz — kommt aus der Ausfüllhilfe. Sie muss eingabefertig sein und ihre
+    Gegenproben gegen steuern.json bestehen; `bh` fügt nur den Rahmen hinzu
+    (Steuernummer, Zeitraum, Absender aus mandant.json). Mehrfach abgegebene
+    Vordrucke (Anlage N je Person, Anlage V je Objekt, Anlage Kind je Kind) trennt
+    das `einzel` ihres Formulars."""
+    _pflicht(stamm, "name", "strasse", "plz", "ort")
+    if not re.fullmatch(r"\d{13}", steuernummer or ""):
+        raise DatenFehlen("Steuernummer im ELSTER-Format hat 13 Ziffern.")
+    if not re.fullmatch(r"\d{4}", bufa or ""):
+        raise DatenFehlen("Bundesfinanzamtsnummer hat vier Ziffern (mandant.json, elster.bufa).")
+    if spec.get("gesperrt"):
+        raise DatenFehlen("Die Überleitung in steuern.json ist gesperrt (Platzhalter oder "
+                          "Abweichung von den Konten) — erst `bh abgabe` freibekommen.")
+    eintraege = zuordnung(ausfuellhilfe, "est")
+    if not any(x["vordruck"] == "ESt1A" for x in eintraege):
+        raise DatenFehlen("Die Ausfüllhilfe (elster.json) trägt keine Felder des "
+                          "Hauptvordrucks ESt 1 A mit `xml` — die Einkommensteuererklärung "
+                          "entsteht allein aus ihr.")
+    doku = doku or eric_klartext.dokumentation()
+    index, wiederholt = _doku("est", jahr, doku)
+
+    wurzel, nd = _nutzdaten("ESt", bufa=bufa, hersteller_id=hersteller_id, produkt=produkt,
+                            produktversion=produktversion, datenlieferant=stamm["name"],
+                            testmerker=testmerker)
+    ns = f"http://finkonsens.de/elster/elstererklaerung/est/e10/v{jahr}"
+    e10 = _sub(nd, f"{{{ns}}}E10", version=str(jahr))
+    # Der Absender hat 45 Zeichen; zwei Ehegatten passen oft nicht hinein, dann
+    # steht die erste Person da, nicht ein abgeschnittener Name
+    absender = stamm["name"]
+    if len(absender) > 45:
+        absender = absender.split(" und ")[0] if len(absender.split(" und ")[0]) <= 45 else \
+            absender[:46].rsplit(" ", 1)[0]
+    _vorsatz(e10, ns, "10", stamm={**stamm, "name": absender}, steuernummer=steuernummer, jahr=jahr,
+             bescheid=bool((ausfuellhilfe or {}).get("bescheiddaten_abholen")))
+    _einsetzen(e10, ns, eintraege, index, wiederholt)
+    _ordnen(e10, "est", jahr, doku)
     return _text(wurzel)
 
 
 def betraege_aus_xml(xml: str, art: str) -> dict[str, str]:
-    """Die Betragsfelder eines Datensatzes: {'E8002001': '-1235', ...}."""
+    """Die Betragsfelder eines Datensatzes: {'E8002001': '-1235', ...}. Steht ein
+    Feld mehrfach darin (mehrere Anlagen V), zählt es mit: 'E0701601 (2)'."""
     felder = BETRAEGE[art]
-    return {e.tag.rpartition("}")[2]: (e.text or "").strip()
-            for e in ET.fromstring(xml.encode("utf-8")).iter()
-            if e.tag.rpartition("}")[2] in felder}
+    aus: dict[str, str] = {}
+    zahl: dict[str, int] = {}
+    for e in ET.fromstring(xml.encode("utf-8")).iter():
+        n = e.tag.rpartition("}")[2]
+        if n in felder:
+            zahl[n] = zahl.get(n, 0) + 1
+            aus[n if zahl[n] == 1 else f"{n} ({zahl[n]})"] = (e.text or "").strip()
+    return aus
